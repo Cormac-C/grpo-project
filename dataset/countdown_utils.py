@@ -123,7 +123,7 @@ def extract_solution(solution_str: str) -> Optional[str]:
 def validate_equation(equation_str: str, available_numbers: List[int]) -> bool:
     """
     Ensures that the left side of the equation (before '=') uses exactly
-    the numbers in `available_numbers`, once each.
+    the numbers in `available_numbers`
     """
     try:
         # Split at the '=' to isolate the left side
@@ -154,8 +154,8 @@ def evaluate_equation(equation_str: str) -> Optional[float]:
 
 
 def compute_metrics(
-    solution_str: str,
-    ground_truth: Dict,
+    output: str,
+    query: Dict,
     format_score: float = 0.1,
     score: float = 1.0
 ) -> Dict[str, float]:
@@ -172,10 +172,10 @@ def compute_metrics(
     reward_score = 0.0
     accuracy = 0.0
 
-    target = ground_truth['target']
-    numbers = ground_truth['numbers']
+    target = query['target']
+    numbers = query['numbers']
 
-    equation = extract_solution(solution_str)
+    equation = extract_solution(output)
     
     if equation is not None:
         if validate_equation(equation, numbers):
