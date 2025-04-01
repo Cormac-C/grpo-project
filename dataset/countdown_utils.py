@@ -2,7 +2,6 @@ import re
 import json
 from random import randint, seed
 from typing import List, Tuple, Dict, Optional
-from tqdm import tqdm
 import itertools
 
 # ---------------------- Dataset Generator ----------------------
@@ -148,7 +147,6 @@ def evaluate_equation(equation_str: str) -> Optional[float]:
         lhs, _ = equation_str.split('=', 1)  # split just once
         allowed_pattern = r'^[\d+\-*/().\s]+$'
         if not re.match(allowed_pattern, lhs):
-            print("Invalid characters in expression.")
             raise ValueError("Invalid characters in equation.")
         return eval(lhs, {"__builtins__": None}, {})
     except:
