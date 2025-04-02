@@ -21,8 +21,8 @@ def grpo_iteration(d_b, policy_model, reward_model, optimizer, G, eps, beta, mu)
     # Sample G outputs from the policy for each query in d_b
     outputs = sample_outputs(policy_model, d_b, G)
 
-    # Compute rewards for each output
-    rewards = calculate_rewards(d_b, outputs, reward_model)
+    # Compute rewards and accuracies for each output
+    rewards, accuracies = calculate_rewards_and_accuracies(d_b, outputs, reward_model)
 
     # Compute token-level advantage for each token in each output
     advantages = calculate_grpo_advantage(outputs, rewards)
@@ -71,8 +71,19 @@ def sample_outputs(policy, d_b, G, max_length=512):
             output[i, g] = policy.generate(query, max_length=max_length)
     return output
 
+    """ Aman's Code """
+    # with torch.no_grad():
+    #     batch = {key: value.to(policy.device) for key, value in batch.items()}  # Move to GPU
+    #     generated_ids = policy.generate(**batch, max_length=max_length)
+    #     # Extract generated tokens beyond input length
+    #     generated_ids = [
+    #         output_ids[len(input_ids):] for input_ids, output_ids in zip(batch["input_ids"], generated_ids)
+    #     ]
+    #     batch_responses = tokenizer.batch_decode(clean_generated_ids, skip_special_tokens=True)
+    #     return batch_responses
 
-def calculate_rewards(d_b, outputs, reward_model):
+
+def calculate_rewards_and_accuracies(d_b, outputs, reward_model):
     """
     Calculate the rewards for each output across the batch of queries.
 
@@ -85,10 +96,13 @@ def calculate_rewards(d_b, outputs, reward_model):
     """
     # Rewards are scalars so shape is (batch_size, G)
     rewards = torch.zeros(len(d_b), outputs.shape[1])
+    accuracies = torch.zeros(len(d_b), outputs.shape[1])
     # TODO: revisit to get rid of for loop
     for i, query in enumerate(d_b):
-        rewards[i] = reward_model(query, outputs[i])
-    return rewards
+        metrics = reward_model(query, outputs[i])
+        rewards[i] = metrics['reward_score']
+        accuracies[i] = metrics['accuracy']
+    return rewards, accuracies
 
 
 def calculate_grpo_advantage(outputs, rewards):
