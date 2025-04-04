@@ -1,7 +1,13 @@
 import torch
+from transformers import GenerationConfig
+
+MAX_NEW_TOKENS = 1024
+TEMPERATURE = 1.0
 
 
-def grpo_iteration(d_b, policy_model, reward_model, optimizer, G, eps, beta, mu):
+def grpo_iteration(
+    d_b, policy_model, reward_model, tokenizer, optimizer, G, eps, beta, mu
+):
     """
     Perform one iteration of the GRPO algorithm.
 
@@ -9,6 +15,7 @@ def grpo_iteration(d_b, policy_model, reward_model, optimizer, G, eps, beta, mu)
         d_b: Batch of queries.
         policy_model: The current policy model.
         reward_model: The reward model.
+        tokenizer: The tokenizer for the policy model.
         optimizer: The optimizer for the policy model.
         G: The number of outputs to sample.
         eps: The clipping width in GRPO objective.
@@ -19,7 +26,7 @@ def grpo_iteration(d_b, policy_model, reward_model, optimizer, G, eps, beta, mu)
         The updated policy.
     """
     # Sample G outputs from the policy for each query in d_b
-    outputs = sample_outputs(policy_model, d_b, G)
+    outputs = sample_outputs(policy_model, tokenizer, d_b, G)
 
     # Compute rewards and accuracies for each output
     rewards, accuracies = calculate_rewards_and_accuracies(d_b, outputs, reward_model)
@@ -49,12 +56,13 @@ def grpo_iteration(d_b, policy_model, reward_model, optimizer, G, eps, beta, mu)
     return policy_model
 
 
-def sample_outputs(policy, d_b, G, max_length=512):
+def sample_outputs(policy, tokenizer, d_b, G):
     """
     Sample G outputs from the policy for each query in d_b.
 
     Args:
         policy: The current policy.
+        tokenizer: The tokenizer for the policy model.
         d_b: Batch of queries.
         G: The number of outputs to sample.
         max_length: The maximum length of the generated sequences.
@@ -62,25 +70,35 @@ def sample_outputs(policy, d_b, G, max_length=512):
     Returns:
         A list of sampled outputs.
     """
-    # Sample G outputs from the policy for each query in d_b
-    output = torch.zeros((len(d_b), G, max_length), dtype=torch.long)
-    # TODO: revisit to try to avoid for loops
-    for i, query in enumerate(d_b):
-        for g in range(G):
-            # TODO: Pass in generation parameters
-            output[i, g] = policy.generate(query, max_length=max_length)
-    return output
+    gen_config = GenerationConfig(
+        max_new_tokens=MAX_NEW_TOKENS,
+        do_sample=True,
+        num_return_sequences=G,
+        temperature=TEMPERATURE,
+    )
 
-    """ Aman's Code """
-    # with torch.no_grad():
-    #     batch = {key: value.to(policy.device) for key, value in batch.items()}  # Move to GPU
-    #     generated_ids = policy.generate(**batch, max_length=max_length)
-    #     # Extract generated tokens beyond input length
-    #     generated_ids = [
-    #         output_ids[len(input_ids):] for input_ids, output_ids in zip(batch["input_ids"], generated_ids)
-    #     ]
-    #     batch_responses = tokenizer.batch_decode(clean_generated_ids, skip_special_tokens=True)
-    #     return batch_responses
+    with torch.no_grad():
+        # Move the batch to the device of the policy
+        d_b = {key: value.to(policy.device) for key, value in d_b.items()}
+
+        tokenized_queries = tokenizer(d_b, return_tensors="pt", padding=True)
+
+        # Sample G outputs from the policy for each query in d_b
+        outputs = policy.generate(**tokenized_queries, generation_config=gen_config)
+
+        generated_ids = [
+            output_ids[len(input_ids) :]
+            for input_ids, output_ids in zip(d_b["input_ids"], generated_ids)
+        ]
+
+        batch_responses = tokenizer.batch_decode(
+            generated_ids, skip_special_tokens=True
+        )
+
+    # Reshape the outputs to have shape (batch_size, G, max_length)
+    outputs = batch_responses.view(len(d_b), G, -1)
+
+    return outputs
 
 
 def calculate_rewards_and_accuracies(d_b, outputs, reward_model):
@@ -100,8 +118,8 @@ def calculate_rewards_and_accuracies(d_b, outputs, reward_model):
     # TODO: revisit to get rid of for loop
     for i, query in enumerate(d_b):
         metrics = reward_model(query, outputs[i])
-        rewards[i] = metrics['reward_score']
-        accuracies[i] = metrics['accuracy']
+        rewards[i] = metrics["reward_score"]
+        accuracies[i] = metrics["accuracy"]
     return rewards, accuracies
 
 
