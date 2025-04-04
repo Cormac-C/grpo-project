@@ -3,6 +3,7 @@ from transformers import GenerationConfig
 
 MAX_NEW_TOKENS = 1024
 TEMPERATURE = 1.0
+STABILITY_CONST = 1e-8
 
 
 def grpo_iteration(
@@ -115,11 +116,11 @@ def calculate_rewards_and_accuracies(d_b, outputs, reward_model):
     # Rewards are scalars so shape is (batch_size, G)
     rewards = torch.zeros(len(d_b), outputs.shape[1])
     accuracies = torch.zeros(len(d_b), outputs.shape[1])
-    # TODO: revisit to get rid of for loop
-    for i, query in enumerate(d_b):
-        metrics = reward_model(query, outputs[i])
-        rewards[i] = metrics["reward_score"]
-        accuracies[i] = metrics["accuracy"]
+
+    # Assume reward model can accomodate a batch of queries and outputs
+    metrics = reward_model(d_b, outputs)
+    rewards = metrics["reward_score"]
+    accuracies = metrics["accuracy"]
     return rewards, accuracies
 
 
@@ -136,13 +137,13 @@ def calculate_grpo_advantage(outputs, rewards):
     # Outputs have shape (batch_size, G, max_length)
     # Rewards have shape (batch_size, G)
     # Advantages have shape (batch_size, G, max_length)
-    stability_const = 1e-8
+
     advantages = torch.zeros(outputs.shape)
     for i, output_group in enumerate(outputs):
         group_mean = torch.mean(rewards[i])
         group_std = torch.std(rewards[i])
         # Reponse advantage has shape (G), is normalized by group mean and std
-        response_advantage = (rewards[i] - group_mean) / (group_std + stability_const)
+        response_advantage = (rewards[i] - group_mean) / (group_std + STABILITY_CONST)
         # Spread response advantage across all tokens in the output
         advantages[i] = response_advantage.unsqueeze(1).expand(-1, outputs.shape[2])
 
