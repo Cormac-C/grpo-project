@@ -66,7 +66,7 @@ def grpo_iteration(
 
 def sample_outputs(policy, tokenizer, d_b, G):
     """
-    Sample G outputs from the policy for each query in d_b.
+    Sample G outputs from the policy for each query in d_b. Doesn't track gradients or log probs.
 
     Args:
         policy: The current policy.
@@ -75,8 +75,8 @@ def sample_outputs(policy, tokenizer, d_b, G):
         G: The number of outputs to sample.
 
     Returns:
-        A list of sampled outputs, a list of lists of strings of shape (batch_size, G).
-        The log probabilities of the sampled outputs, a tensor of size (batch_size, G, max_length).
+        Generated ids, a tensor of shape (batch_size, G, max_length).
+        Generated text, a list of strings of shape (batch_size, G).
     """
     gen_config = GenerationConfig(
         max_new_tokens=MAX_NEW_TOKENS,
@@ -84,7 +84,7 @@ def sample_outputs(policy, tokenizer, d_b, G):
         num_return_sequences=G,
         temperature=TEMPERATURE,
         return_dict_in_generate=True,
-        output_scores=True,
+        output_scores=False,
     )
 
     # Tokenize the batch of queries
@@ -107,24 +107,7 @@ def sample_outputs(policy, tokenizer, d_b, G):
 
     # Separate the generated IDs from the input IDs
     generated_ids = output_ids[:, tokenized_queries["input_ids"].shape[1] :]
-    # logger.info(f"Generated IDs shape: {generated_ids.shape}")
-
-    # Get logits and log probabilities
-    logits = output.scores
-    # logits is a tuple of tensors for each output step
-    # logger.info(f"Logits length: {len(logits)}")
-    # logger.info(f"Logits shape: {logits[0].shape}")
-
-    log_probs = []
-    for step, logit in enumerate(logits):
-        tokens_generated = generated_ids[:, step]
-        step_log_probs = F.log_softmax(logit, dim=-1)
-        # Gather the log probabilities for the batch
-        gathered_log_probs = step_log_probs.gather(1, tokens_generated.unsqueeze(-1))
-        log_probs.append(gathered_log_probs)
-    # Stack the log probabilities for each step
-    logprobs = torch.stack(log_probs, dim=1)
-    # logger.info(f"Log probabilities shape: {logprobs.shape}")
+    logger.info(f"Generated IDs shape: {generated_ids.shape}")
 
     # Decode the generated IDs to text
     batch_responses = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
@@ -137,10 +120,12 @@ def sample_outputs(policy, tokenizer, d_b, G):
     logger.info(
         f"Responses shape: {len(responses_reshaped)}, {len(responses_reshaped[0])}"
     )
-    logprobs = logprobs.view(len(d_b), G, -1)
-    logger.info(f"Log probabilities shape: {logprobs.shape}")
 
-    return responses_reshaped, logprobs
+    # Reshape the generated IDs to have shape (batch_size, G, max_length)
+    generated_ids_reshaped = generated_ids.view(batch_size, G, -1)
+    logger.info(f"Generated IDs reshaped: {generated_ids_reshaped.shape}")
+
+    return generated_ids_reshaped, responses_reshaped
 
 
 def calculate_rewards_and_accuracies(d_b, outputs, reward_model):
