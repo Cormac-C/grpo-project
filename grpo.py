@@ -1,9 +1,16 @@
 import torch
+import torch.nn.functional as F
+import logging
 from transformers import GenerationConfig
 
-MAX_NEW_TOKENS = 1024
+# TODO: Reduced max_new_tokens for testing, return to original value for full training
+# MAX_NEW_TOKENS = 1024
+MAX_NEW_TOKENS = 128
 TEMPERATURE = 1.0
 STABILITY_CONST = 1e-8
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 
 def grpo_iteration(
@@ -64,42 +71,76 @@ def sample_outputs(policy, tokenizer, d_b, G):
     Args:
         policy: The current policy.
         tokenizer: The tokenizer for the policy model.
-        d_b: Batch of queries.
+        d_b: Batch of queries, a list of strings of length batch_size.
         G: The number of outputs to sample.
-        max_length: The maximum length of the generated sequences.
 
     Returns:
-        A list of sampled outputs.
+        A list of sampled outputs, a list of lists of strings of shape (batch_size, G).
+        The log probabilities of the sampled outputs, a tensor of size (batch_size, G, max_length).
     """
     gen_config = GenerationConfig(
         max_new_tokens=MAX_NEW_TOKENS,
         do_sample=True,
         num_return_sequences=G,
         temperature=TEMPERATURE,
+        return_dict_in_generate=True,
+        output_scores=True,
     )
 
+    # Tokenize the batch of queries
+    tokenized_queries = tokenizer(
+        d_b, return_tensors="pt", padding=True, truncation=True
+    )
+
+    # Move the tokenized batch to the device of the policy
+    tokenized_queries = {
+        key: value.to(policy.device) for key, value in tokenized_queries.items()
+    }
+
+    # TODO: Revisit if it makes sense to no_grad here
+    # Sample G outputs from the policy for each query in d_b
     with torch.no_grad():
-        # Move the batch to the device of the policy
-        d_b = {key: value.to(policy.device) for key, value in d_b.items()}
+        output = policy.generate(**tokenized_queries, generation_config=gen_config)
 
-        tokenized_queries = tokenizer(d_b, return_tensors="pt", padding=True)
+    output_ids = output.sequences
+    # logger.info(f"Output IDs shape: {output_ids.shape}")
 
-        # Sample G outputs from the policy for each query in d_b
-        outputs = policy.generate(**tokenized_queries, generation_config=gen_config)
+    # Separate the generated IDs from the input IDs
+    generated_ids = output_ids[:, tokenized_queries["input_ids"].shape[1] :]
+    # logger.info(f"Generated IDs shape: {generated_ids.shape}")
 
-        generated_ids = [
-            output_ids[len(input_ids) :]
-            for input_ids, output_ids in zip(d_b["input_ids"], generated_ids)
-        ]
+    # Get logits and log probabilities
+    logits = output.scores
+    # logits is a tuple of tensors for each output step
+    # logger.info(f"Logits length: {len(logits)}")
+    # logger.info(f"Logits shape: {logits[0].shape}")
 
-        batch_responses = tokenizer.batch_decode(
-            generated_ids, skip_special_tokens=True
-        )
+    log_probs = []
+    for step, logit in enumerate(logits):
+        tokens_generated = generated_ids[:, step]
+        step_log_probs = F.log_softmax(logit, dim=-1)
+        # Gather the log probabilities for the batch
+        gathered_log_probs = step_log_probs.gather(1, tokens_generated.unsqueeze(-1))
+        log_probs.append(gathered_log_probs)
+    # Stack the log probabilities for each step
+    logprobs = torch.stack(log_probs, dim=1)
+    # logger.info(f"Log probabilities shape: {logprobs.shape}")
 
-    # Reshape the outputs to have shape (batch_size, G, max_length)
-    outputs = batch_responses.view(len(d_b), G, -1)
+    # Decode the generated IDs to text
+    batch_responses = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
+    # logger.info(f"Batch responses: {batch_responses}")
+    # Reshape the outputs to have shape (batch_size, G), each item contains the generated text and log probs
+    batch_size = len(d_b)
+    responses_reshaped = [
+        batch_responses[i * G : (i + 1) * G] for i in range(batch_size)
+    ]
+    logger.info(
+        f"Responses shape: {len(responses_reshaped)}, {len(responses_reshaped[0])}"
+    )
+    logprobs = logprobs.view(len(d_b), G, -1)
+    logger.info(f"Log probabilities shape: {logprobs.shape}")
 
-    return outputs
+    return responses_reshaped, logprobs
 
 
 def calculate_rewards_and_accuracies(d_b, outputs, reward_model):
@@ -179,6 +220,7 @@ def calculate_grpo_objective(
     Returns:
         The GRPO objective value.
     """
+    # TODO: Need to revisit model_log_probs and old_model_log_probs, model log probs aren't available to actually calculate the objective
     prob_ratios = torch.exp(model_log_probs - old_model_log_probs)
     clipped_ratios = torch.clamp(prob_ratios, 1 - eps, 1 + eps)
     min_product = torch.min(prob_ratios * advantages, clipped_ratios * advantages)
