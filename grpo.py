@@ -5,7 +5,7 @@ from transformers import GenerationConfig
 
 # Define constants
 # TODO: Reduced max_new_tokens for testing, return to original value for full training
-MAX_NEW_TOKENS = 512  # 1024
+MAX_NEW_TOKENS = 64  # 1024
 TEMPERATURE = 1.0
 STABILITY_CONST = 1e-8
 
@@ -93,7 +93,7 @@ def grpo_iteration(
         )
 
         # Compute gradient of the GRPO objective
-        # TODO: Address 'grad can be implicitly created only for scalar outputs'
+        # Objective is a tensor right now, need to take mean across the batch
         loss = -objective
         loss.backward()
 
@@ -293,7 +293,7 @@ def calculate_grpo_objective(
     # Combine the KL term into objective
     objective = min_product - beta * kl_div
     logger.info(f"Objective shape: {objective.shape}")
-    # Take mean across all tokens and all outputs
-    objective = torch.mean(objective, dim=[1, 2])
+    # Take mean across all tokens and all outputs and batch
+    objective = torch.mean(objective, dim=[0, 1, 2])
     logger.info(f"Final objective shape: {objective.shape}")
     return objective
