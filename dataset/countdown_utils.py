@@ -4,13 +4,8 @@ from random import randint, seed
 from typing import List, Tuple, Dict, Optional
 import itertools
 import torch
-import logging
 
-# Define constants
 EVAL_MARGIN = 1e-5
-
-# Configure logging
-logger = logging.getLogger(__name__)
 
 
 # ---------------------- Dataset Generator ----------------------

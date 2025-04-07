@@ -4,15 +4,11 @@ import logging
 from transformers import GenerationConfig, PreTrainedModel, PreTrainedTokenizerBase
 from typing import Callable
 
-# TODO: Reduced max_new_tokens for testing, return to original value for full training
-MAX_NEW_TOKENS = 64  # 1024
+MAX_NEW_TOKENS = 1024
 TEMPERATURE = 1.0
 STABILITY_CONST = 1e-8
 
 logger = logging.getLogger(__name__)
-
-# TODO: clean up logger messages
-# TODO: clean up unnecessary comments
 
 
 def grpo_iteration(
