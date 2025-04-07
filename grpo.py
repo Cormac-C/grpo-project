@@ -1,14 +1,40 @@
 import torch
+import torch.nn.functional as F
+import logging
+from transformers import GenerationConfig, PreTrainedModel, PreTrainedTokenizerBase
+from typing import Callable
+
+MAX_NEW_TOKENS = 1024
+TEMPERATURE = 1.0
+STABILITY_CONST = 1e-8
+
+logger = logging.getLogger(__name__)
 
 
-def grpo_iteration(d_b, policy_model, reward_model, optimizer, G, eps, beta, mu):
+def grpo_iteration(
+    query_batch_prompts: list[str],
+    query_batch_raw: list[dict],
+    policy_model: PreTrainedModel,
+    reference_model: PreTrainedModel,
+    reward_model: Callable,
+    tokenizer: PreTrainedTokenizerBase,
+    optimizer: torch.optim.Optimizer,
+    G: int,
+    eps: float,
+    beta: float,
+    mu: int,
+    max_new_tokens: int = MAX_NEW_TOKENS,
+    temperature: float = TEMPERATURE,
+) -> PreTrainedModel:
     """
     Perform one iteration of the GRPO algorithm.
 
     Args:
-        d_b: Batch of queries.
+        query_batch_prompts: Batch of queries.
+        query_batch_raw: Raw batch of inputs and targets for queries.
         policy_model: The current policy model.
         reward_model: The reward model.
+        tokenizer: The tokenizer for the policy model.
         optimizer: The optimizer for the policy model.
         G: The number of outputs to sample.
         eps: The clipping width in GRPO objective.
@@ -18,28 +44,57 @@ def grpo_iteration(d_b, policy_model, reward_model, optimizer, G, eps, beta, mu)
     Returns:
         The updated policy.
     """
-    # Sample G outputs from the policy for each query in d_b
-    outputs = sample_outputs(policy_model, d_b, G)
+    # Sample G outputs from the policy for each query in query_batch
+    outputs_ids, outputs = sample_outputs(
+        policy_model, tokenizer, query_batch_prompts, G, max_new_tokens, temperature
+    )
 
     # Compute rewards and accuracies for each output
-    rewards, accuracies = calculate_rewards_and_accuracies(d_b, outputs, reward_model)
+    rewards, accuracies = reward_model(outputs, query_batch_raw)
+    logger.info(f"Average Accuracy: {accuracies.mean()}")
 
     # Compute token-level advantage for each token in each output
-    advantages = calculate_grpo_advantage(outputs, rewards)
+    advantages = calculate_grpo_advantage(rewards)
 
-    for _ in range(mu):
+    #  Compute log probabilities for reference model and pre-update policy, no gradients here
+    with torch.no_grad():
+        old_log_probs = compute_log_probs(
+            policy=policy_model,
+            tokenizer=tokenizer,
+            query_batch=query_batch_prompts,
+            generated_ids=outputs_ids,
+        )
+        reference_model_log_probs = compute_log_probs(
+            policy=reference_model,
+            tokenizer=tokenizer,
+            query_batch=query_batch_prompts,
+            generated_ids=outputs_ids,
+        )
+
+    for i in range(mu):
+        logger.info(f"Update iteration: {i+1}/{mu}")
+        # Compute log probabilities for the current policy model, this needs gradients
+        model_log_probs = compute_log_probs(
+            policy=policy_model,
+            tokenizer=tokenizer,
+            query_batch=query_batch_prompts,
+            generated_ids=outputs_ids,
+        )
         # Compute GRPO objective
         objective = calculate_grpo_objective(
-            policy_model.log_probs(outputs),
-            policy_model.old_log_probs(outputs),
-            policy_model.ref_model_log_probs(outputs),
-            advantages,
-            eps,
-            beta,
+            model_log_probs=model_log_probs,
+            old_model_log_probs=old_log_probs,
+            ref_model_log_probs=reference_model_log_probs,
+            advantages=advantages,
+            eps=eps,
+            beta=beta,
         )
 
         # Compute gradient of the GRPO objective
         loss = -objective
+        # Take the mean loss across the batch
+        loss = torch.mean(loss)
+        logger.info(f"Loss: {loss.item()}")
         loss.backward()
 
         # Update the policy
@@ -49,89 +104,152 @@ def grpo_iteration(d_b, policy_model, reward_model, optimizer, G, eps, beta, mu)
     return policy_model
 
 
-def sample_outputs(policy, d_b, G, max_length=512):
+def sample_outputs(
+    policy: PreTrainedModel,
+    tokenizer: PreTrainedTokenizerBase,
+    query_batch: list[str],
+    G: int,
+    max_new_tokens: int = MAX_NEW_TOKENS,
+    temperature: float = TEMPERATURE,
+) -> tuple[torch.Tensor, list[str]]:
     """
-    Sample G outputs from the policy for each query in d_b.
+    Sample G outputs from the policy for each query in query_batch. Doesn't track gradients or log probs.
 
     Args:
         policy: The current policy.
-        d_b: Batch of queries.
+        tokenizer: The tokenizer for the policy model.
+        query_batch: Batch of queries, a list of strings of length batch_size.
         G: The number of outputs to sample.
-        max_length: The maximum length of the generated sequences.
 
     Returns:
-        A list of sampled outputs.
+        Generated ids, a tensor of shape (batch_size, G, max_length).
+        Generated text, a list of strings of shape (batch_size, G).
     """
-    # Sample G outputs from the policy for each query in d_b
-    output = torch.zeros((len(d_b), G, max_length), dtype=torch.long)
-    # TODO: revisit to try to avoid for loops
-    for i, query in enumerate(d_b):
-        for g in range(G):
-            # TODO: Pass in generation parameters
-            output[i, g] = policy.generate(query, max_length=max_length)
-    return output
+    gen_config = GenerationConfig(
+        max_new_tokens=max_new_tokens,
+        do_sample=True,
+        num_return_sequences=G,
+        temperature=temperature,
+        return_dict_in_generate=True,
+        output_scores=False,
+    )
 
-    """ Aman's Code """
-    # with torch.no_grad():
-    #     batch = {key: value.to(policy.device) for key, value in batch.items()}  # Move to GPU
-    #     generated_ids = policy.generate(**batch, max_length=max_length)
-    #     # Extract generated tokens beyond input length
-    #     generated_ids = [
-    #         output_ids[len(input_ids):] for input_ids, output_ids in zip(batch["input_ids"], generated_ids)
-    #     ]
-    #     batch_responses = tokenizer.batch_decode(clean_generated_ids, skip_special_tokens=True)
-    #     return batch_responses
+    tokenized_queries = tokenizer(
+        query_batch, return_tensors="pt", padding=True, truncation=True
+    )
+    tokenized_queries = {
+        key: value.to(policy.device) for key, value in tokenized_queries.items()
+    }
+
+    with torch.no_grad():
+        output = policy.generate(**tokenized_queries, generation_config=gen_config)
+    output_ids = output.sequences
+
+    generated_ids = output_ids[:, tokenized_queries["input_ids"].shape[1] :]
+
+    batch_responses = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
+    # Reshape the responses to have shape (batch_size, G), each item contains the generated text and log probs
+    batch_size = len(query_batch)
+    responses_reshaped = [
+        batch_responses[i * G : (i + 1) * G] for i in range(batch_size)
+    ]
+
+    # Reshape the generated IDs to have shape (batch_size, G, max_length)
+    generated_ids_reshaped = generated_ids.view(batch_size, G, -1)
+    assert (
+        generated_ids_reshaped.shape[0] == tokenized_queries["input_ids"].shape[0]
+    ), "Generated IDs must have the same batch size as input IDs"
+    assert (
+        generated_ids_reshaped.shape[1] == G
+    ), "Generated IDs must have the same number of outputs as G"
+
+    return generated_ids_reshaped, responses_reshaped
 
 
-def calculate_rewards_and_accuracies(d_b, outputs, reward_model):
+def calculate_grpo_advantage(rewards: torch.Tensor) -> torch.Tensor:
     """
-    Calculate the rewards for each output across the batch of queries.
-
+    Calculate advantage for each output.
     Args:
-        d_b: Batch of queries.
-        outputs: The sampled outputs.
-        reward_model: The reward model.
+        rewards: The rewards for each output, have shape (batch_size, G).
     Returns:
-        A tensor of rewards for each output.
+        A tensor of advantages for each output, shape (batch_size, G).
     """
-    # Rewards are scalars so shape is (batch_size, G)
-    rewards = torch.zeros(len(d_b), outputs.shape[1])
-    accuracies = torch.zeros(len(d_b), outputs.shape[1])
-    # TODO: revisit to get rid of for loop
-    for i, query in enumerate(d_b):
-        metrics = reward_model(query, outputs[i])
-        rewards[i] = metrics['reward_score']
-        accuracies[i] = metrics['accuracy']
-    return rewards, accuracies
 
-
-def calculate_grpo_advantage(outputs, rewards):
-    """
-    Calculate token-level advantage for each token of each output.
-    Args:
-        outputs: The sampled outputs.
-        rewards: The rewards for each output.
-    Returns:
-        A tensor of advantages for each token in each output.
-    """
-    # TODO: revisit, maybe don't need to pass in outputs
-    # Outputs have shape (batch_size, G, max_length)
-    # Rewards have shape (batch_size, G)
-    # Advantages have shape (batch_size, G, max_length)
-    stability_const = 1e-8
-    advantages = torch.zeros(outputs.shape)
-    for i, output_group in enumerate(outputs):
+    advantages = rewards.clone()
+    for i in range(rewards.shape[0]):
         group_mean = torch.mean(rewards[i])
         group_std = torch.std(rewards[i])
-        # Reponse advantage has shape (G), is normalized by group mean and std
-        response_advantage = (rewards[i] - group_mean) / (group_std + stability_const)
-        # Spread response advantage across all tokens in the output
-        advantages[i] = response_advantage.unsqueeze(1).expand(-1, outputs.shape[2])
-
+        # Normalize the advantage by group mean and std
+        advantages[i] = (rewards[i] - group_mean) / (group_std + STABILITY_CONST)
     return advantages
 
 
-def kl_div_estimator(model_log_probs, ref_model_log_probs):
+def compute_log_probs(
+    policy: PreTrainedModel,
+    tokenizer: PreTrainedTokenizerBase,
+    query_batch: list[str],
+    generated_ids: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Calculate log probabilities for the generated IDs for a given policy.
+    Args:
+        policy: The current policy.
+        tokenizer: The tokenizer for the policy model.
+        query_batch: Batch of queries, should be of shape (batch_size).
+        generated_ids: The generated IDs, should be of shape (batch_size, G, max_length).
+    Returns:
+        Log probabilities for the generated IDs, should be of shape (batch_size, G, max_length).
+
+    """
+    tokenized_queries = tokenizer(
+        query_batch, return_tensors="pt", padding=True, truncation=True
+    )
+    query_ids = tokenized_queries["input_ids"]
+
+    # Expand the query IDs to match the shape of generated IDs
+    query_ids = query_ids.unsqueeze(1).expand(-1, generated_ids.shape[1], -1)
+    assert (
+        query_ids.shape[0] == generated_ids.shape[0]
+    ), "Query IDs and generated IDs must have the same batch size"
+    assert (
+        query_ids.shape[1] == generated_ids.shape[1]
+    ), "Query IDs and generated IDs must have the same number of outputs"
+
+    input_ids = torch.cat((query_ids, generated_ids), dim=2)
+    # Reshape the input IDs to have shape (batch_size * G, max_length)
+    input_ids = input_ids.view(-1, input_ids.shape[-1])
+    assert (
+        input_ids.shape[0] == query_ids.shape[0] * query_ids.shape[1]
+    ), "Input IDs must have the same batch size as query IDs and generated IDs"
+
+    input_ids = input_ids.to(policy.device)
+    attention_mask = input_ids.ne(tokenizer.pad_token_id).long().to(policy.device)
+
+    # Run forward pass to get the logits
+    outputs = policy(input_ids=input_ids, attention_mask=attention_mask)
+    logits = outputs.logits
+    generated_logits = logits[:, query_ids.shape[2] :]
+
+    # Calculate log probabilities
+    log_probs = F.log_softmax(generated_logits, dim=-1)
+    generated_ids = generated_ids.view(-1, generated_ids.shape[-1])
+    log_probs = log_probs.gather(2, generated_ids.unsqueeze(-1)).squeeze(-1)
+    batch_size = len(query_batch)
+    log_probs = log_probs.view(batch_size, -1, generated_ids.shape[-1])
+
+    assert (
+        log_probs.shape[0] * log_probs.shape[1] == generated_ids.shape[0]
+    ), "Log probabilities must have the same number of queries and outputs as generated IDs"
+    assert (
+        log_probs.shape[2] == generated_ids.shape[1]
+    ), "Log probabilities must have the same length as generated IDs"
+
+    return log_probs
+
+
+def kl_div_estimator(
+    model_log_probs: torch.Tensor, ref_model_log_probs: torch.Tensor
+) -> torch.Tensor:
     """
     Estimate the KL divergence between the model and reference model.
     Args:
@@ -146,8 +264,13 @@ def kl_div_estimator(model_log_probs, ref_model_log_probs):
 
 
 def calculate_grpo_objective(
-    model_log_probs, old_model_log_probs, ref_model_log_probs, advantages, eps, beta
-):
+    model_log_probs: torch.Tensor,
+    old_model_log_probs: torch.Tensor,
+    ref_model_log_probs: torch.Tensor,
+    advantages: torch.Tensor,
+    eps: float = 0.1,
+    beta: float = 0.005,
+) -> torch.Tensor:
     """
     Calculate the GRPO objective.
     Args:
@@ -158,15 +281,27 @@ def calculate_grpo_objective(
         eps: The clipping width in GRPO objective.
         beta: The influence of KL div term.
     Returns:
-        The GRPO objective value.
+        The GRPO objective value, of shape (batch_size).
     """
     prob_ratios = torch.exp(model_log_probs - old_model_log_probs)
     clipped_ratios = torch.clamp(prob_ratios, 1 - eps, 1 + eps)
+    assert (
+        prob_ratios.shape == clipped_ratios.shape
+    ), "Prob ratios and clipped ratios must have the same shape"
+    # Expand the advantages to match the dimensions of prob_ratios
+    advantages = advantages.unsqueeze(-1)
     min_product = torch.min(prob_ratios * advantages, clipped_ratios * advantages)
-    # Estimate KL
+    assert (
+        min_product.shape[0] == model_log_probs.shape[0]
+        and min_product.shape[1] == model_log_probs.shape[1]
+    ), "Min product must have the same batch size and number of outputs as model log probs"
+
     kl_div = kl_div_estimator(model_log_probs, ref_model_log_probs)
-    # Combine the KL term into objective
+
     objective = min_product - beta * kl_div
     # Take mean across all tokens and all outputs
-    objective = torch.mean(objective, dim=[0, 1])
+    objective = torch.mean(objective, dim=[1, 2])
+    assert (
+        objective.shape[0] == model_log_probs.shape[0]
+    ), "Objective must have the same batch size as model log probs"
     return objective
