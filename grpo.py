@@ -23,6 +23,8 @@ def grpo_iteration(
     eps: float,
     beta: float,
     mu: int,
+    max_new_tokens: int = MAX_NEW_TOKENS,
+    temperature: float = TEMPERATURE,
 ) -> PreTrainedModel:
     """
     Perform one iteration of the GRPO algorithm.
@@ -44,11 +46,12 @@ def grpo_iteration(
     """
     # Sample G outputs from the policy for each query in query_batch
     outputs_ids, outputs = sample_outputs(
-        policy_model, tokenizer, query_batch_prompts, G
+        policy_model, tokenizer, query_batch_prompts, G, max_new_tokens, temperature
     )
 
     # Compute rewards and accuracies for each output
-    rewards, _ = reward_model(outputs, query_batch_raw)
+    rewards, accuracies = reward_model(outputs, query_batch_raw)
+    logger.info(f"Average Accuracy: {accuracies.mean()}")
 
     # Compute token-level advantage for each token in each output
     advantages = calculate_grpo_advantage(rewards)
@@ -106,6 +109,8 @@ def sample_outputs(
     tokenizer: PreTrainedTokenizerBase,
     query_batch: list[str],
     G: int,
+    max_new_tokens: int = MAX_NEW_TOKENS,
+    temperature: float = TEMPERATURE,
 ) -> tuple[torch.Tensor, list[str]]:
     """
     Sample G outputs from the policy for each query in query_batch. Doesn't track gradients or log probs.
@@ -121,10 +126,10 @@ def sample_outputs(
         Generated text, a list of strings of shape (batch_size, G).
     """
     gen_config = GenerationConfig(
-        max_new_tokens=MAX_NEW_TOKENS,
+        max_new_tokens=max_new_tokens,
         do_sample=True,
         num_return_sequences=G,
-        temperature=TEMPERATURE,
+        temperature=temperature,
         return_dict_in_generate=True,
         output_scores=False,
     )
