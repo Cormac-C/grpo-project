@@ -11,7 +11,6 @@ STABILITY_CONST = 1e-8
 
 logger = logging.getLogger(__name__)
 
-# TODO: add types for all functions
 # TODO: clean up logger messages
 # TODO: clean up unnecessary comments
 
@@ -133,42 +132,34 @@ def sample_outputs(
         output_scores=False,
     )
 
-    # Tokenize the batch of queries
     tokenized_queries = tokenizer(
         query_batch, return_tensors="pt", padding=True, truncation=True
     )
-
-    # Move the tokenized batch to the device of the policy
     tokenized_queries = {
         key: value.to(policy.device) for key, value in tokenized_queries.items()
     }
 
-    # Sample G outputs from the policy for each query in query_batch
     with torch.no_grad():
         output = policy.generate(**tokenized_queries, generation_config=gen_config)
-
     output_ids = output.sequences
-    # logger.info(f"Output IDs shape: {output_ids.shape}")
 
-    # Separate the generated IDs from the input IDs
     generated_ids = output_ids[:, tokenized_queries["input_ids"].shape[1] :]
-    logger.info(f"Generated IDs shape: {generated_ids.shape}")
 
-    # Decode the generated IDs to text
     batch_responses = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
-    # logger.info(f"Batch responses: {batch_responses}")
-    # Reshape the outputs to have shape (batch_size, G), each item contains the generated text and log probs
+    # Reshape the responses to have shape (batch_size, G), each item contains the generated text and log probs
     batch_size = len(query_batch)
     responses_reshaped = [
         batch_responses[i * G : (i + 1) * G] for i in range(batch_size)
     ]
-    logger.info(
-        f"Responses shape: {len(responses_reshaped)}, {len(responses_reshaped[0])}"
-    )
 
     # Reshape the generated IDs to have shape (batch_size, G, max_length)
     generated_ids_reshaped = generated_ids.view(batch_size, G, -1)
-    logger.info(f"Generated IDs reshaped: {generated_ids_reshaped.shape}")
+    assert (
+        generated_ids_reshaped.shape[0] == tokenized_queries["input_ids"].shape[0]
+    ), "Generated IDs must have the same batch size as input IDs"
+    assert (
+        generated_ids_reshaped.shape[1] == G
+    ), "Generated IDs must have the same number of outputs as G"
 
     return generated_ids_reshaped, responses_reshaped
 
@@ -208,51 +199,48 @@ def compute_log_probs(
         Log probabilities for the generated IDs, should be of shape (batch_size, G, max_length).
 
     """
-    # TODO: Chill out the comments in this function
-    # Tokenize the batch of queries
     tokenized_queries = tokenizer(
         query_batch, return_tensors="pt", padding=True, truncation=True
     )
     query_ids = tokenized_queries["input_ids"]
+
     # Expand the query IDs to match the shape of generated IDs
     query_ids = query_ids.unsqueeze(1).expand(-1, generated_ids.shape[1], -1)
-    logger.info(f"Query IDs shape: {query_ids.shape}")
-    logger.info(f"Generated IDs shape: {generated_ids.shape}")
+    assert (
+        query_ids.shape[0] == generated_ids.shape[0]
+    ), "Query IDs and generated IDs must have the same batch size"
+    assert (
+        query_ids.shape[1] == generated_ids.shape[1]
+    ), "Query IDs and generated IDs must have the same number of outputs"
 
-    # Concatenate the query IDs and generated IDs
     input_ids = torch.cat((query_ids, generated_ids), dim=2)
-    logger.info(f"Input IDs shape: {input_ids.shape}")
     # Reshape the input IDs to have shape (batch_size * G, max_length)
     input_ids = input_ids.view(-1, input_ids.shape[-1])
-    logger.info(f"Reshaped Input IDs shape: {input_ids.shape}")
+    assert (
+        input_ids.shape[0] == query_ids.shape[0] * query_ids.shape[1]
+    ), "Input IDs must have the same batch size as query IDs and generated IDs"
 
-    # Move the input IDs to the device of the policy
     input_ids = input_ids.to(policy.device)
-    # Get the attention mask
     attention_mask = input_ids.ne(tokenizer.pad_token_id).long().to(policy.device)
-    logger.info(f"Attention mask shape: {attention_mask.shape}")
 
     # Run forward pass to get the logits
     outputs = policy(input_ids=input_ids, attention_mask=attention_mask)
     logits = outputs.logits
-    logger.info(f"Logits shape: {logits.shape}")
-
-    # Separate the logits for the generated IDs
     generated_logits = logits[:, query_ids.shape[2] :]
-    logger.info(f"Generated logits shape: {generated_logits.shape}")
 
     # Calculate log probabilities
     log_probs = F.log_softmax(generated_logits, dim=-1)
-    logger.info(f"Log probabilities shape: {log_probs.shape}")
-    # Get the log probabilities for the generated IDs
     generated_ids = generated_ids.view(-1, generated_ids.shape[-1])
     log_probs = log_probs.gather(2, generated_ids.unsqueeze(-1)).squeeze(-1)
-    logger.info(f"Gathered log probabilities shape: {log_probs.shape}")
-
-    # Reshape the log probabilities to have shape (batch_size, G, max_length)
     batch_size = len(query_batch)
     log_probs = log_probs.view(batch_size, -1, generated_ids.shape[-1])
-    logger.info(f"Reshaped log probabilities shape: {log_probs.shape}")
+
+    assert (
+        log_probs.shape[0] * log_probs.shape[1] == generated_ids.shape[0]
+    ), "Log probabilities must have the same number of queries and outputs as generated IDs"
+    assert (
+        log_probs.shape[2] == generated_ids.shape[1]
+    ), "Log probabilities must have the same length as generated IDs"
 
     return log_probs
 
@@ -294,21 +282,24 @@ def calculate_grpo_objective(
         The GRPO objective value, of shape (batch_size).
     """
     prob_ratios = torch.exp(model_log_probs - old_model_log_probs)
-    logger.info(f"Prob ratios shape: {prob_ratios.shape}")
     clipped_ratios = torch.clamp(prob_ratios, 1 - eps, 1 + eps)
-    logger.info(f"Clipped ratios shape: {clipped_ratios.shape}")
+    assert (
+        prob_ratios.shape == clipped_ratios.shape
+    ), "Prob ratios and clipped ratios must have the same shape"
     # Expand the advantages to match the dimensions of prob_ratios
     advantages = advantages.unsqueeze(-1)
-    logger.info(f"Advantages shape: {advantages.shape}")
     min_product = torch.min(prob_ratios * advantages, clipped_ratios * advantages)
-    logger.info(f"Min product shape: {min_product.shape}")
-    # Estimate KL
+    assert (
+        min_product.shape[0] == model_log_probs.shape[0]
+        and min_product.shape[1] == model_log_probs.shape[1]
+    ), "Min product must have the same batch size and number of outputs as model log probs"
+
     kl_div = kl_div_estimator(model_log_probs, ref_model_log_probs)
-    logger.info(f"KL divergence shape: {kl_div.shape}")
-    # Combine the KL term into objective
+
     objective = min_product - beta * kl_div
-    logger.info(f"Objective shape: {objective.shape}")
     # Take mean across all tokens and all outputs
     objective = torch.mean(objective, dim=[1, 2])
-    logger.info(f"Final objective shape: {objective.shape}")
+    assert (
+        objective.shape[0] == model_log_probs.shape[0]
+    ), "Objective must have the same batch size as model log probs"
     return objective
