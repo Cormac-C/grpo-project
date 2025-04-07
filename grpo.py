@@ -1,34 +1,34 @@
 import torch
 import torch.nn.functional as F
 import logging
-from transformers import GenerationConfig
+from transformers import GenerationConfig, PreTrainedModel, PreTrainedTokenizerBase
+from typing import Callable
 
-# Define constants
 # TODO: Reduced max_new_tokens for testing, return to original value for full training
 MAX_NEW_TOKENS = 64  # 1024
 TEMPERATURE = 1.0
 STABILITY_CONST = 1e-8
 
-# Configure logging
 logger = logging.getLogger(__name__)
 
 # TODO: add types for all functions
 # TODO: clean up logger messages
+# TODO: clean up unnecessary comments
 
 
 def grpo_iteration(
-    query_batch_prompts,
-    query_batch_raw,
-    policy_model,
-    reference_model,
-    reward_model,
-    tokenizer,
-    optimizer,
-    G,
-    eps,
-    beta,
-    mu,
-):
+    query_batch_prompts: list[str],
+    query_batch_raw: list[dict],
+    policy_model: PreTrainedModel,
+    reference_model: PreTrainedModel,
+    reward_model: Callable,
+    tokenizer: PreTrainedTokenizerBase,
+    optimizer: torch.optim.Optimizer,
+    G: int,
+    eps: float,
+    beta: float,
+    mu: int,
+) -> PreTrainedModel:
     """
     Perform one iteration of the GRPO algorithm.
 
@@ -105,7 +105,12 @@ def grpo_iteration(
     return policy_model
 
 
-def sample_outputs(policy, tokenizer, query_batch, G):
+def sample_outputs(
+    policy: PreTrainedModel,
+    tokenizer: PreTrainedTokenizerBase,
+    query_batch: list[str],
+    G: int,
+) -> tuple[torch.Tensor, list[str]]:
     """
     Sample G outputs from the policy for each query in query_batch. Doesn't track gradients or log probs.
 
@@ -168,7 +173,7 @@ def sample_outputs(policy, tokenizer, query_batch, G):
     return generated_ids_reshaped, responses_reshaped
 
 
-def calculate_grpo_advantage(rewards):
+def calculate_grpo_advantage(rewards: torch.Tensor) -> torch.Tensor:
     """
     Calculate advantage for each output.
     Args:
@@ -183,12 +188,15 @@ def calculate_grpo_advantage(rewards):
         group_std = torch.std(rewards[i])
         # Normalize the advantage by group mean and std
         advantages[i] = (rewards[i] - group_mean) / (group_std + STABILITY_CONST)
-
-    logger.info(f"Advantages shape: {advantages.shape}")
     return advantages
 
 
-def compute_log_probs(policy, tokenizer, query_batch, generated_ids):
+def compute_log_probs(
+    policy: PreTrainedModel,
+    tokenizer: PreTrainedTokenizerBase,
+    query_batch: list[str],
+    generated_ids: torch.Tensor,
+) -> torch.Tensor:
     """
     Calculate log probabilities for the generated IDs for a given policy.
     Args:
@@ -249,7 +257,9 @@ def compute_log_probs(policy, tokenizer, query_batch, generated_ids):
     return log_probs
 
 
-def kl_div_estimator(model_log_probs, ref_model_log_probs):
+def kl_div_estimator(
+    model_log_probs: torch.tensor, ref_model_log_probs: torch.tensor
+) -> torch.tensor:
     """
     Estimate the KL divergence between the model and reference model.
     Args:
@@ -264,8 +274,13 @@ def kl_div_estimator(model_log_probs, ref_model_log_probs):
 
 
 def calculate_grpo_objective(
-    model_log_probs, old_model_log_probs, ref_model_log_probs, advantages, eps, beta
-):
+    model_log_probs: torch.tensor,
+    old_model_log_probs: torch.tensor,
+    ref_model_log_probs: torch.tensor,
+    advantages: torch.tensor,
+    eps: float = 0.1,
+    beta: float = 0.005,
+) -> torch.tensor:
     """
     Calculate the GRPO objective.
     Args:
@@ -278,7 +293,6 @@ def calculate_grpo_objective(
     Returns:
         The GRPO objective value, of shape (batch_size).
     """
-    # TODO: Need to revisit model_log_probs and old_model_log_probs, model log probs aren't available to actually calculate the objective
     prob_ratios = torch.exp(model_log_probs - old_model_log_probs)
     logger.info(f"Prob ratios shape: {prob_ratios.shape}")
     clipped_ratios = torch.clamp(prob_ratios, 1 - eps, 1 + eps)
