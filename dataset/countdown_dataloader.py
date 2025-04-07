@@ -21,15 +21,10 @@ class Countdown(Dataset):
         target = item["target"]
         numbers = item["numbers"]
 
-        sample = {"target": target, "numbers": numbers}
+        sample = {
+            "prompt": f"Using the numbers {item["numbers"]}, create an equation that equals {item["target"]}. Box your answer.",
+            "numbers": numbers,
+            "target": target,
+        }
 
         return sample
-
-    def get_batch(self, batch_size: int):
-        """
-        Returns a batch of data.
-        """
-
-        batch = [self.data[i] for i in range(batch_size)]
-
-        return batch
