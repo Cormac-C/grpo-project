@@ -14,7 +14,8 @@ logger = logging.getLogger(__name__)
 
 
 def grpo_iteration(
-    query_batch,
+    query_batch_prompts,
+    query_batch_raw,
     policy_model,
     reference_model,
     reward_model,
@@ -29,7 +30,8 @@ def grpo_iteration(
     Perform one iteration of the GRPO algorithm.
 
     Args:
-        query_batch: Batch of queries.
+        query_batch_prompts: Batch of queries.
+        query_batch_raw: Raw batch of inputs and targets for queries.
         policy_model: The current policy model.
         reward_model: The reward model.
         tokenizer: The tokenizer for the policy model.
@@ -43,29 +45,55 @@ def grpo_iteration(
         The updated policy.
     """
     # Sample G outputs from the policy for each query in query_batch
-    outputs = sample_outputs(policy_model, tokenizer, query_batch, G)
+    outputs_ids, outputs = sample_outputs(
+        policy_model, tokenizer, query_batch_prompts, G
+    )
 
     # Compute rewards and accuracies for each output
-    rewards, accuracies = calculate_rewards_and_accuracies(
-        query_batch, outputs, reward_model
-    )
+    rewards, accuracies = reward_model(outputs, query_batch_raw)
 
     # Compute token-level advantage for each token in each output
     advantages = calculate_grpo_advantage(rewards)
 
+    old_log_probs = compute_log_probs(
+        policy=policy_model,
+        tokenizer=tokenizer,
+        query_batch=query_batch_prompts,
+        generated_ids=outputs_ids,
+    )
+
+    reference_model_log_probs = compute_log_probs(
+        policy=reference_model,
+        tokenizer=tokenizer,
+        query_batch=query_batch_prompts,
+        generated_ids=outputs_ids,
+    )
+
     # TODO: revisit this function, handling of different models
-    for _ in range(mu):
+    for i in range(mu):
+        if i == 0:
+            # Don't need to compute log probs for the first iteration
+            model_log_probs = old_log_probs
+        else:
+            # Compute log probabilities for the generated IDs for the current policy
+            model_log_probs = compute_log_probs(
+                policy=policy_model,
+                tokenizer=tokenizer,
+                query_batch=query_batch_prompts,
+                generated_ids=outputs_ids,
+            )
         # Compute GRPO objective
         objective = calculate_grpo_objective(
-            policy_model.log_probs(outputs),
-            policy_model.old_log_probs(outputs),
-            policy_model.ref_model_log_probs(outputs),
-            advantages,
-            eps,
-            beta,
+            model_log_probs=model_log_probs,
+            old_model_log_probs=old_log_probs,
+            ref_model_log_probs=reference_model_log_probs,
+            advantages=advantages,
+            eps=eps,
+            beta=beta,
         )
 
         # Compute gradient of the GRPO objective
+        # TODO: Address 'grad can be implicitly created only for scalar outputs'
         loss = -objective
         loss.backward()
 
@@ -109,7 +137,6 @@ def sample_outputs(policy, tokenizer, query_batch, G):
         key: value.to(policy.device) for key, value in tokenized_queries.items()
     }
 
-    # TODO: Revisit if it makes sense to no_grad here
     # Sample G outputs from the policy for each query in query_batch
     with torch.no_grad():
         output = policy.generate(**tokenized_queries, generation_config=gen_config)
@@ -138,29 +165,6 @@ def sample_outputs(policy, tokenizer, query_batch, G):
     logger.info(f"Generated IDs reshaped: {generated_ids_reshaped.shape}")
 
     return generated_ids_reshaped, responses_reshaped
-
-
-def calculate_rewards_and_accuracies(query_batch, outputs, reward_model):
-    """
-    Calculate the rewards for each output across the batch of queries.
-
-    Args:
-        query_batch: Batch of queries.
-        outputs: The sampled outputs.
-        reward_model: The reward model.
-    Returns:
-        A tensor of rewards for each output.
-    """
-    # TODO: revisit if this is the best structure
-    # Rewards are scalars so shape is (batch_size, G)
-    rewards = torch.zeros(len(query_batch), outputs.shape[1])
-    accuracies = torch.zeros(len(query_batch), outputs.shape[1])
-
-    # Assume reward model can accomodate a batch of queries and outputs
-    metrics = reward_model(query_batch, outputs)
-    rewards = metrics["reward_score"]
-    accuracies = metrics["accuracy"]
-    return rewards, accuracies
 
 
 def calculate_grpo_advantage(rewards):
