@@ -248,8 +248,8 @@ def compute_log_probs(
 
 
 def kl_div_estimator(
-    model_log_probs: torch.tensor, ref_model_log_probs: torch.tensor
-) -> torch.tensor:
+    model_log_probs: torch.Tensor, ref_model_log_probs: torch.Tensor
+) -> torch.Tensor:
     """
     Estimate the KL divergence between the model and reference model.
     Args:
@@ -264,13 +264,13 @@ def kl_div_estimator(
 
 
 def calculate_grpo_objective(
-    model_log_probs: torch.tensor,
-    old_model_log_probs: torch.tensor,
-    ref_model_log_probs: torch.tensor,
-    advantages: torch.tensor,
+    model_log_probs: torch.Tensor,
+    old_model_log_probs: torch.Tensor,
+    ref_model_log_probs: torch.Tensor,
+    advantages: torch.Tensor,
     eps: float = 0.1,
     beta: float = 0.005,
-) -> torch.tensor:
+) -> torch.Tensor:
     """
     Calculate the GRPO objective.
     Args:
