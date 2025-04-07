@@ -3,9 +3,9 @@ import torch.nn.functional as F
 import logging
 from transformers import GenerationConfig
 
+# Define constants
 # TODO: Reduced max_new_tokens for testing, return to original value for full training
-# MAX_NEW_TOKENS = 1024
-MAX_NEW_TOKENS = 128
+MAX_NEW_TOKENS = 128  # 1024
 TEMPERATURE = 1.0
 STABILITY_CONST = 1e-8
 
@@ -40,7 +40,7 @@ def grpo_iteration(
     rewards, accuracies = calculate_rewards_and_accuracies(d_b, outputs, reward_model)
 
     # Compute token-level advantage for each token in each output
-    advantages = calculate_grpo_advantage(outputs, rewards)
+    advantages = calculate_grpo_advantage(rewards)
 
     for _ in range(mu):
         # Compute GRPO objective
@@ -139,6 +139,7 @@ def calculate_rewards_and_accuracies(d_b, outputs, reward_model):
     Returns:
         A tensor of rewards for each output.
     """
+    # TODO: revisit if this is the best structure
     # Rewards are scalars so shape is (batch_size, G)
     rewards = torch.zeros(len(d_b), outputs.shape[1])
     accuracies = torch.zeros(len(d_b), outputs.shape[1])
