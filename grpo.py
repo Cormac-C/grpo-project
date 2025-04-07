@@ -12,6 +12,9 @@ STABILITY_CONST = 1e-8
 # Configure logging
 logger = logging.getLogger(__name__)
 
+# TODO: add types for all functions
+# TODO: clean up logger messages
+
 
 def grpo_iteration(
     query_batch_prompts,
@@ -55,33 +58,30 @@ def grpo_iteration(
     # Compute token-level advantage for each token in each output
     advantages = calculate_grpo_advantage(rewards)
 
-    old_log_probs = compute_log_probs(
-        policy=policy_model,
-        tokenizer=tokenizer,
-        query_batch=query_batch_prompts,
-        generated_ids=outputs_ids,
-    )
+    #  Compute log probabilities for reference model and pre-update policy, no gradients here
+    with torch.no_grad():
+        old_log_probs = compute_log_probs(
+            policy=policy_model,
+            tokenizer=tokenizer,
+            query_batch=query_batch_prompts,
+            generated_ids=outputs_ids,
+        )
+        reference_model_log_probs = compute_log_probs(
+            policy=reference_model,
+            tokenizer=tokenizer,
+            query_batch=query_batch_prompts,
+            generated_ids=outputs_ids,
+        )
 
-    reference_model_log_probs = compute_log_probs(
-        policy=reference_model,
-        tokenizer=tokenizer,
-        query_batch=query_batch_prompts,
-        generated_ids=outputs_ids,
-    )
-
-    # TODO: revisit this function, handling of different models
     for i in range(mu):
-        if i == 0:
-            # Don't need to compute log probs for the first iteration
-            model_log_probs = old_log_probs
-        else:
-            # Compute log probabilities for the generated IDs for the current policy
-            model_log_probs = compute_log_probs(
-                policy=policy_model,
-                tokenizer=tokenizer,
-                query_batch=query_batch_prompts,
-                generated_ids=outputs_ids,
-            )
+        logger.info(f"Update iteration: {i+1}/{mu}")
+        # Compute log probabilities for the current policy model, this needs gradients
+        model_log_probs = compute_log_probs(
+            policy=policy_model,
+            tokenizer=tokenizer,
+            query_batch=query_batch_prompts,
+            generated_ids=outputs_ids,
+        )
         # Compute GRPO objective
         objective = calculate_grpo_objective(
             model_log_probs=model_log_probs,
@@ -93,8 +93,9 @@ def grpo_iteration(
         )
 
         # Compute gradient of the GRPO objective
-        # Objective is a tensor right now, need to take mean across the batch
         loss = -objective
+        # Take the mean loss across the batch
+        loss = torch.mean(loss)
         loss.backward()
 
         # Update the policy
@@ -275,7 +276,7 @@ def calculate_grpo_objective(
         eps: The clipping width in GRPO objective.
         beta: The influence of KL div term.
     Returns:
-        The GRPO objective value.
+        The GRPO objective value, of shape (batch_size).
     """
     # TODO: Need to revisit model_log_probs and old_model_log_probs, model log probs aren't available to actually calculate the objective
     prob_ratios = torch.exp(model_log_probs - old_model_log_probs)
@@ -293,7 +294,7 @@ def calculate_grpo_objective(
     # Combine the KL term into objective
     objective = min_product - beta * kl_div
     logger.info(f"Objective shape: {objective.shape}")
-    # Take mean across all tokens and all outputs and batch
-    objective = torch.mean(objective, dim=[0, 1, 2])
+    # Take mean across all tokens and all outputs
+    objective = torch.mean(objective, dim=[1, 2])
     logger.info(f"Final objective shape: {objective.shape}")
     return objective
