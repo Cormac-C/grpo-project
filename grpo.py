@@ -5,7 +5,7 @@ from transformers import GenerationConfig
 
 # Define constants
 # TODO: Reduced max_new_tokens for testing, return to original value for full training
-MAX_NEW_TOKENS = 128  # 1024
+MAX_NEW_TOKENS = 512  # 1024
 TEMPERATURE = 1.0
 STABILITY_CONST = 1e-8
 
@@ -14,7 +14,16 @@ logger = logging.getLogger(__name__)
 
 
 def grpo_iteration(
-    query_batch, policy_model, reward_model, tokenizer, optimizer, G, eps, beta, mu
+    query_batch,
+    policy_model,
+    reference_model,
+    reward_model,
+    tokenizer,
+    optimizer,
+    G,
+    eps,
+    beta,
+    mu,
 ):
     """
     Perform one iteration of the GRPO algorithm.
@@ -44,6 +53,7 @@ def grpo_iteration(
     # Compute token-level advantage for each token in each output
     advantages = calculate_grpo_advantage(rewards)
 
+    # TODO: revisit this function, handling of different models
     for _ in range(mu):
         # Compute GRPO objective
         objective = calculate_grpo_objective(
@@ -265,12 +275,21 @@ def calculate_grpo_objective(
     """
     # TODO: Need to revisit model_log_probs and old_model_log_probs, model log probs aren't available to actually calculate the objective
     prob_ratios = torch.exp(model_log_probs - old_model_log_probs)
+    logger.info(f"Prob ratios shape: {prob_ratios.shape}")
     clipped_ratios = torch.clamp(prob_ratios, 1 - eps, 1 + eps)
+    logger.info(f"Clipped ratios shape: {clipped_ratios.shape}")
+    # Expand the advantages to match the dimensions of prob_ratios
+    advantages = advantages.unsqueeze(-1)
+    logger.info(f"Advantages shape: {advantages.shape}")
     min_product = torch.min(prob_ratios * advantages, clipped_ratios * advantages)
+    logger.info(f"Min product shape: {min_product.shape}")
     # Estimate KL
     kl_div = kl_div_estimator(model_log_probs, ref_model_log_probs)
+    logger.info(f"KL divergence shape: {kl_div.shape}")
     # Combine the KL term into objective
     objective = min_product - beta * kl_div
+    logger.info(f"Objective shape: {objective.shape}")
     # Take mean across all tokens and all outputs
-    objective = torch.mean(objective, dim=[0, 1])
+    objective = torch.mean(objective, dim=[1, 2])
+    logger.info(f"Final objective shape: {objective.shape}")
     return objective
