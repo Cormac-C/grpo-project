@@ -230,6 +230,4 @@ def batch_compute_metrics(
     # Convert to tensors
     rewards_tensor = torch.tensor(rewards, dtype=torch.float32)
     accuracies_tensor = torch.tensor(accuracies, dtype=torch.float32)
-    logger.info(f"Rewards tensor shape: {rewards_tensor.shape}")
-    logger.info(f"Accuracies tensor shape: {accuracies_tensor.shape}")
     return rewards_tensor, accuracies_tensor

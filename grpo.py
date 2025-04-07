@@ -52,7 +52,7 @@ def grpo_iteration(
     )
 
     # Compute rewards and accuracies for each output
-    rewards, accuracies = reward_model(outputs, query_batch_raw)
+    rewards, _ = reward_model(outputs, query_batch_raw)
 
     # Compute token-level advantage for each token in each output
     advantages = calculate_grpo_advantage(rewards)
@@ -95,6 +95,7 @@ def grpo_iteration(
         loss = -objective
         # Take the mean loss across the batch
         loss = torch.mean(loss)
+        logger.info(f"Loss: {loss.item()}")
         loss.backward()
 
         # Update the policy
