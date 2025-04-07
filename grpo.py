@@ -150,29 +150,26 @@ def calculate_rewards_and_accuracies(d_b, outputs, reward_model):
     return rewards, accuracies
 
 
-def calculate_grpo_advantage(outputs, rewards):
+def calculate_grpo_advantage(rewards):
     """
-    Calculate token-level advantage for each token of each output.
+    Calculate advantage for each output.
     Args:
-        outputs: The sampled outputs.
-        rewards: The rewards for each output.
+        rewards: The rewards for each output, have shape (batch_size, G).
     Returns:
-        A tensor of advantages for each token in each output.
+        A tensor of advantages for each output, shape (batch_size, G).
     """
-    # TODO: revisit, maybe don't need to pass in outputs
-    # Outputs have shape (batch_size, G, max_length)
-    # Rewards have shape (batch_size, G)
-    # Advantages have shape (batch_size, G, max_length)
 
-    advantages = torch.zeros(outputs.shape)
-    for i, output_group in enumerate(outputs):
+    advantages = rewards.clone()
+    # Calculate the advantage for each output
+    # The advantage is the difference between the reward and the mean reward for that output
+    # across the batch of queries
+    for i in range(rewards.shape[0]):
         group_mean = torch.mean(rewards[i])
         group_std = torch.std(rewards[i])
-        # Reponse advantage has shape (G), is normalized by group mean and std
-        response_advantage = (rewards[i] - group_mean) / (group_std + STABILITY_CONST)
-        # Spread response advantage across all tokens in the output
-        advantages[i] = response_advantage.unsqueeze(1).expand(-1, outputs.shape[2])
+        # Normalize the advantage by group mean and std
+        advantages[i] = (rewards[i] - group_mean) / (group_std + STABILITY_CONST)
 
+    logger.info(f"Advantages shape: {advantages.shape}")
     return advantages
 
 
