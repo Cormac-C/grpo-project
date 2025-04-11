@@ -157,3 +157,16 @@ def main():
                 mu=mu,
             )
         logger.info("Epoch %d completed.", epoch + 1)
+
+    # Save the model
+    output_dir = args.output_dir
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    model.save_pretrained(output_dir)
+    logger.info("Model saved to: %s", output_dir)
+    wandb.finish()
+    logger.info("Training completed successfully.")
+
+
+if __name__ == "__main__":
+    main()

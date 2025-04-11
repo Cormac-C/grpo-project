@@ -101,6 +101,8 @@ def grpo_iteration(
         optimizer.step()
         optimizer.zero_grad()
 
+        # TODO: add more metrics to track
+
     return policy_model
 
 
