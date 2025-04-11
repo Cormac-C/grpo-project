@@ -3,6 +3,7 @@ import torch.nn.functional as F
 import logging
 from transformers import GenerationConfig, PreTrainedModel, PreTrainedTokenizerBase
 from typing import Callable
+import gc
 
 MAX_NEW_TOKENS = 1024
 TEMPERATURE = 1.0
@@ -49,6 +50,8 @@ def grpo_iteration(
         policy_model, tokenizer, query_batch_prompts, G, max_new_tokens, temperature
     )
 
+    clear_cache()
+
     # Compute rewards and accuracies for each output
     rewards, accuracies = reward_model(outputs, query_batch_raw)
     logger.info(f"Average Accuracy: {accuracies.mean()}")
@@ -64,13 +67,21 @@ def grpo_iteration(
             query_batch=query_batch_prompts,
             generated_ids=outputs_ids,
         )
+        # Swap the policy model and reference model
+        gpu_device = policy_model.device
+        policy_model.to("cpu")
+        reference_model.to(gpu_device)
+
         reference_model_log_probs = compute_log_probs(
             policy=reference_model,
             tokenizer=tokenizer,
             query_batch=query_batch_prompts,
             generated_ids=outputs_ids,
         )
-
+        # Swap back the models
+        reference_model.to("cpu")
+        policy_model.to(gpu_device)
+    clear_cache()
     for i in range(mu):
         logger.info(f"Update iteration: {i+1}/{mu}")
         # Compute log probabilities for the current policy model, this needs gradients
@@ -102,8 +113,13 @@ def grpo_iteration(
         optimizer.zero_grad()
 
         # TODO: add more metrics to track
-
+    clear_cache()
     return policy_model
+
+
+def clear_cache():
+    gc.collect()
+    torch.cuda.empty_cache()
 
 
 def sample_outputs(
