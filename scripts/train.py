@@ -33,13 +33,13 @@ def parse_args():
     parser.add_argument(
         "--dataset",
         type=str,
-        default="/countdown.json",
+        default="/data/countdown.json",
         help="The path to the dataset to use for training.",
     )
     parser.add_argument(
         "--output-dir",
         type=str,
-        default="output",
+        default="/output",
         help="The directory to save the trained model.",
     )
     parser.add_argument(
