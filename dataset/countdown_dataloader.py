@@ -22,6 +22,7 @@ class Countdown(Dataset):
         numbers = item["numbers"]
 
         sample = {
+            # TODO: Maybe look at changing this prompt to be more like tinyzero
             "prompt": f"Using the numbers {item["numbers"]}, create an equation that equals {item["target"]}. Box your answer.",
             "numbers": numbers,
             "target": target,

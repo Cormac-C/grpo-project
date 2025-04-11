@@ -323,3 +323,44 @@ def calculate_grpo_objective(
         objective.shape[0] == model_log_probs.shape[0]
     ), "Objective must have the same batch size as model log probs"
     return objective
+
+
+def evaluate_policy(
+    policy_model: PreTrainedModel,
+    tokenizer: PreTrainedTokenizerBase,
+    reward_model: Callable,
+    test_batch: list[str],
+    test_batch_raw: list[dict],
+    max_new_tokens: int = MAX_NEW_TOKENS,
+    temperature: float = TEMPERATURE,
+):
+    """
+    Evaluate the policy model on a test batch.
+    Args:
+        policy_model: The current policy model.
+        tokenizer: The tokenizer for the policy model.
+        reward_model: The reward model.
+        test_batch: Batch of queries, should be of shape (batch_size).
+        test_batch_raw: Raw batch of inputs and targets for queries.
+        max_new_tokens: The maximum number of new tokens to generate.
+        temperature: The temperature for sampling.
+    Returns:
+        Generated text, a list of strings of shape (batch_size).
+    """
+    policy_model.eval()
+    with torch.no_grad():
+        outputs_ids, outputs = sample_outputs(
+            policy_model,
+            tokenizer,
+            test_batch,
+            G=1,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+        )
+
+    clear_cache()
+
+    # Compute rewards and accuracies for each output
+    rewards, accuracies = reward_model(outputs, test_batch_raw)
+
+    return rewards, accuracies
