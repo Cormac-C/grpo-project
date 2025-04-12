@@ -41,7 +41,7 @@ python scripts/create_dataset.py --save-dir=./data/small-scale --num-samples=100
 To train the model you can use the following script with flags to set the base model, hyperparameters, the dataset location, and save dir:
 
 ```train script
-python scripts/train.py --base-model=Qwen/Qwen2.5-1.5B --dataset=./data/countdown.json --output-dir=./output --num-epochs=1 --batch-size=8 --learning-rate=1e-5 --num-outputs=5 --epsilon=0.1 --beta=0.05 --mu=1
+python scripts/train.py --base-model=Qwen/Qwen2.5-1.5B --dataset=./data/main/countdown.json --output-dir=./output --num-epochs=1 --batch-size=8 --learning-rate=1e-5 --num-outputs=5 --epsilon=0.1 --beta=0.05 --mu=1
 
-python scripts/train.py --base-model=Qwen/Qwen2.5-0.5B --dataset=./data/countdown-small-scale.json --output-dir=./output --num-epochs=1 --batch-size=8 --learning-rate=1e-5 --num-outputs=3 --epsilon=0.1 --beta=0.05 --mu=1
+python scripts/train.py --base-model=Qwen/Qwen2.5-0.5B --dataset=./data/small-scale/countdown.json --output-dir=./output --num-epochs=1 --batch-size=8 --learning-rate=1e-5 --num-outputs=3 --epsilon=0.1 --beta=0.05 --mu=1
 ```

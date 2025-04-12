@@ -7,7 +7,6 @@ import torch
 
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 
@@ -19,6 +18,7 @@ if module_path not in sys.path:
 # Importing the necessary modules
 from grpo import grpo_iteration, evaluate_policy
 from dataset.countdown_utils import batch_compute_metrics
+from dataset.countdown_dataloader import Countdown
 
 
 # Read arguments
@@ -107,15 +107,17 @@ def main():
         return
     logger.info("Loading dataset from: %s", dataset_path)
     # Load your dataset here
-    dataset = load_dataset(dataset_path)
+    dataset = Countdown(dataset_path)
     if dataset is None:
         logger.error("Failed to load dataset from: %s", dataset_path)
         return
     logger.info("Dataset loaded successfully.")
     # Split dataset into train and test sets
-    train_test = dataset.train_test_split(test_size=0.1)
-    dataset = train_test["train"]
-    test_dataset = train_test["test"]
+    train_size = int(0.9 * len(dataset))
+    test_size = len(dataset) - train_size
+    dataset, test_dataset = torch.utils.data.random_split(
+        dataset, [train_size, test_size], generator=torch.Generator().manual_seed(42)
+    )
     logger.info("Dataset split into train and test sets.")
 
     batch_size = args.batch_size
