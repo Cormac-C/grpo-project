@@ -84,6 +84,7 @@ def grpo_iteration(
     clear_cache()
     for i in range(mu):
         logger.info(f"Update iteration: {i+1}/{mu}")
+        optimizer.zero_grad()
         # Compute log probabilities for the current policy model, this needs gradients
         model_log_probs = compute_log_probs(
             policy=policy_model,
@@ -110,7 +111,6 @@ def grpo_iteration(
 
         # Update the policy
         optimizer.step()
-        optimizer.zero_grad()
 
         # TODO: add more metrics to track
     clear_cache()
