@@ -4,10 +4,10 @@ import sys
 import argparse
 import logging
 import torch
+from dotenv import load_dotenv
 
 from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
-from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 
@@ -21,6 +21,7 @@ from grpo import grpo_iteration, evaluate_policy
 from dataset.countdown_utils import batch_compute_metrics
 from dataset.countdown_dataloader import *
 
+
 # Read arguments
 def parse_args():
     parser = argparse.ArgumentParser(description="Train a model.")
@@ -31,10 +32,16 @@ def parse_args():
         help="The base model to use for training.",
     )
     parser.add_argument(
+        "--dataset-type",
+        type=str,
+        default="JSON",
+        help="Using JSON or HuggingFace dataset",
+    )
+    parser.add_argument(
         "--dataset",
         type=str,
         default="/data/countdown.json",
-        help="The path to the dataset to use for training.",
+        help="The path to the dataset to use for training if using a local JSON.",
     )
     parser.add_argument(
         "--output-dir",
@@ -63,41 +70,54 @@ def parse_args():
     parser.add_argument(
         "--beta", type=float, default=0.05, help="Beta value for the training."
     )
-    parser.add_argument(
-        "--mu", type=float, default=1, help="Mu value for the training."
-    )
-    parser.add_argument(
-        "--dataset_type", type=str, default="JSON", help="Using JSON or HuggingFace dataset"
-    )
+    parser.add_argument("--mu", type=int, default=1, help="Mu value for the training.")
     return parser.parse_args()
 
 
 def main():
+    # Load environment variables
+    load_dotenv()
+
     args = parse_args()
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+    )
     logger = logging.getLogger(__name__)
     logger.info("Starting training with base model: %s", args.base_model)
 
     # Initialize wandb
-    os.environ["WANDB_API_KEY"] = "your_wandb_api_key"
-    os.environ["WANDB_PROJECT"] = "your_project_name"
-    wandb.init(project="your_project_name", entity="your_entity_name")
+    wandb.login(key=os.environ["WANDB_KEY"], relogin=True, force=True)
+
+    wandb.init(
+        project=os.environ["WANDB_PROJECT"],
+        entity=os.environ["WANDB_ENTITY"],
+        config={
+            "base_model": args.base_model,
+            "dataset": args.dataset,
+            "num_epochs": args.num_epochs,
+            "batch_size": args.batch_size,
+            "learning_rate": args.learning_rate,
+            "num_outputs": args.num_outputs,
+            "epsilon": args.epsilon,
+            "beta": args.beta,
+            "mu": args.mu,
+        },
+    )
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     logger.info("Using device: %s", device)
 
     # Load the dataset
-    # Note: need to create the dataset elsewhere
-    dataset_path = args.dataset
-    if not os.path.exists(dataset_path):
-        logger.error("Dataset path does not exist: %s", dataset_path)
-        return
-    logger.info("Loading dataset from: %s", dataset_path)
-    # Load your dataset here
-    if args.dataset_type == 'JSON':
-        dataset = Countdown(dataset_path) # Ours
+    if args.dataset_type == "JSON":
+        dataset_path = args.dataset
+        if not os.path.exists(dataset_path):
+            logger.error("Dataset path does not exist: %s", dataset_path)
+            return
+        logger.info("Loading dataset from: %s", dataset_path)
+        dataset = Countdown(dataset_path)  # Ours
     else:
-        dataset = Countdown_HF() # HuggingFace
+        logger.info("Loading dataset from Hugging Face...")
+        dataset = Countdown_HF()  # HuggingFace
     if dataset is None:
         logger.error("Failed to load dataset from: %s", dataset_path)
         return
@@ -107,7 +127,9 @@ def main():
     test_size = int(0.1 * dataset_size)
     train_size = dataset_size - test_size
     generator = torch.Generator().manual_seed(42)
-    dataset, test_dataset = random_split(dataset, [train_size, test_size], generator=generator)
+    dataset, test_dataset = random_split(
+        dataset, [train_size, test_size], generator=generator
+    )
     logger.info("Dataset split into train and test sets.")
 
     batch_size = args.batch_size
@@ -146,7 +168,7 @@ def main():
     eps = args.epsilon
     beta = args.beta
     mu = args.mu
-    logger.info("Loaded arguments: G=%d, eps=%f, beta=%f, mu=%f", G, eps, beta, mu)
+    logger.info("Loaded arguments: G=%d, eps=%f, beta=%f, mu=%d", G, eps, beta, mu)
 
     # TODO: Revisit is it worth wrapping this in a trainer class: https://huggingface.co/docs/transformers/en/main_classes/trainer
 
@@ -200,8 +222,8 @@ def main():
                     {
                         "epoch": epoch + 1,
                         "batch": batch_iter,
-                        "mean_reward": full_rewards.mean().item(),
-                        "mean_accuracy": full_accuracies.mean().item(),
+                        "test_mean_reward": full_rewards.mean().item(),
+                        "test_mean_accuracy": full_accuracies.mean().item(),
                     }
                 )
 

@@ -16,7 +16,7 @@ def parse_args():
     parser.add_argument(
         "--save-dir",
         type=str,
-        default="/data/countdown.json",
+        default="/data/main",
         help="The directory to save the trained model.",
     )
     parser.add_argument(
@@ -32,7 +32,7 @@ def parse_args():
         help="The number of operands to use for each sample.",
     )
     parser.add_argument(
-        "--max-target", type=int, default=1000, help="The maximum target value."
+        "--max-target", type=int, default=100, help="The maximum target value."
     )
     parser.add_argument(
         "--min-number", type=int, default=1, help="The minimum number to use."
@@ -51,7 +51,9 @@ def parse_args():
 
 def main():
     args = parse_args()
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+    )
     logger = logging.getLogger(__name__)
     logger.info("Creating dataset...")
 
@@ -73,3 +75,7 @@ def main():
     )
 
     logger.info(f"Dataset saved to {save_path}")
+
+
+if __name__ == "__main__":
+    main()
