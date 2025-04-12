@@ -27,7 +27,7 @@ python scripts/create_dataset.py --save-dir=./data/countdown.json --num-samples=
 If you want to change the configuration of the countdown task you can use the following flags:
 
 ```dataset script flags
-python scripts/create_dataset.py --save-dir=./data/countdown.json --num-samples=10000 --num-operands=6 --max-target=100 --min-number=1 --max_number=100
+python scripts/create_dataset.py --save-dir=./data/countdown.json --num-samples=10000 --num-operands=6 --max-target=100 --min-number=1 --max-number=100
 ```
 
 ## Training
