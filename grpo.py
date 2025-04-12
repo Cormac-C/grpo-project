@@ -3,6 +3,7 @@ import torch.nn.functional as F
 import logging
 from transformers import GenerationConfig, PreTrainedModel, PreTrainedTokenizerBase
 from typing import Callable
+import gc
 
 MAX_NEW_TOKENS = 1024
 TEMPERATURE = 1.0
@@ -49,6 +50,8 @@ def grpo_iteration(
         policy_model, tokenizer, query_batch_prompts, G, max_new_tokens, temperature
     )
 
+    clear_cache()
+
     # Compute rewards and accuracies for each output
     rewards, accuracies = reward_model(outputs, query_batch_raw)
     logger.info(f"Average Accuracy: {accuracies.mean()}")
@@ -64,15 +67,24 @@ def grpo_iteration(
             query_batch=query_batch_prompts,
             generated_ids=outputs_ids,
         )
+        # Swap the policy model and reference model
+        gpu_device = policy_model.device
+        policy_model.to("cpu")
+        reference_model.to(gpu_device)
+
         reference_model_log_probs = compute_log_probs(
             policy=reference_model,
             tokenizer=tokenizer,
             query_batch=query_batch_prompts,
             generated_ids=outputs_ids,
         )
-
+        # Swap back the models
+        reference_model.to("cpu")
+        policy_model.to(gpu_device)
+    clear_cache()
     for i in range(mu):
         logger.info(f"Update iteration: {i+1}/{mu}")
+        optimizer.zero_grad()
         # Compute log probabilities for the current policy model, this needs gradients
         model_log_probs = compute_log_probs(
             policy=policy_model,
@@ -99,9 +111,15 @@ def grpo_iteration(
 
         # Update the policy
         optimizer.step()
-        optimizer.zero_grad()
 
+        # TODO: add more metrics to track
+    clear_cache()
     return policy_model
+
+
+def clear_cache():
+    gc.collect()
+    torch.cuda.empty_cache()
 
 
 def sample_outputs(
@@ -305,3 +323,44 @@ def calculate_grpo_objective(
         objective.shape[0] == model_log_probs.shape[0]
     ), "Objective must have the same batch size as model log probs"
     return objective
+
+
+def evaluate_policy(
+    policy_model: PreTrainedModel,
+    tokenizer: PreTrainedTokenizerBase,
+    reward_model: Callable,
+    test_batch: list[str],
+    test_batch_raw: list[dict],
+    max_new_tokens: int = MAX_NEW_TOKENS,
+    temperature: float = TEMPERATURE,
+):
+    """
+    Evaluate the policy model on a test batch.
+    Args:
+        policy_model: The current policy model.
+        tokenizer: The tokenizer for the policy model.
+        reward_model: The reward model.
+        test_batch: Batch of queries, should be of shape (batch_size).
+        test_batch_raw: Raw batch of inputs and targets for queries.
+        max_new_tokens: The maximum number of new tokens to generate.
+        temperature: The temperature for sampling.
+    Returns:
+        Generated text, a list of strings of shape (batch_size).
+    """
+    policy_model.eval()
+    with torch.no_grad():
+        outputs_ids, outputs = sample_outputs(
+            policy_model,
+            tokenizer,
+            test_batch,
+            G=1,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+        )
+
+    clear_cache()
+
+    # Compute rewards and accuracies for each output
+    rewards, accuracies = reward_model(outputs, test_batch_raw)
+
+    return rewards, accuracies
