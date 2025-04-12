@@ -32,10 +32,16 @@ def parse_args():
         help="The base model to use for training.",
     )
     parser.add_argument(
+        "--dataset-type",
+        type=str,
+        default="JSON",
+        help="Using JSON or HuggingFace dataset",
+    )
+    parser.add_argument(
         "--dataset",
         type=str,
         default="/data/countdown.json",
-        help="The path to the dataset to use for training.",
+        help="The path to the dataset to use for training if using a local JSON.",
     )
     parser.add_argument(
         "--output-dir",
@@ -65,12 +71,6 @@ def parse_args():
         "--beta", type=float, default=0.05, help="Beta value for the training."
     )
     parser.add_argument("--mu", type=int, default=1, help="Mu value for the training.")
-    parser.add_argument(
-        "--dataset_type",
-        type=str,
-        default="JSON",
-        help="Using JSON or HuggingFace dataset",
-    )
     return parser.parse_args()
 
 
@@ -108,16 +108,15 @@ def main():
     logger.info("Using device: %s", device)
 
     # Load the dataset
-    # Note: need to create the dataset elsewhere
-    dataset_path = args.dataset
-    if not os.path.exists(dataset_path):
-        logger.error("Dataset path does not exist: %s", dataset_path)
-        return
-    logger.info("Loading dataset from: %s", dataset_path)
-    # Load your dataset here
     if args.dataset_type == "JSON":
+        dataset_path = args.dataset
+        if not os.path.exists(dataset_path):
+            logger.error("Dataset path does not exist: %s", dataset_path)
+            return
+        logger.info("Loading dataset from: %s", dataset_path)
         dataset = Countdown(dataset_path)  # Ours
     else:
+        logger.info("Loading dataset from Hugging Face...")
         dataset = Countdown_HF()  # HuggingFace
     if dataset is None:
         logger.error("Failed to load dataset from: %s", dataset_path)
