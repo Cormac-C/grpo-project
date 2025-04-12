@@ -5,7 +5,7 @@ import argparse
 import logging
 import torch
 
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
 from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -19,7 +19,7 @@ if module_path not in sys.path:
 # Importing the necessary modules
 from grpo import grpo_iteration, evaluate_policy
 from dataset.countdown_utils import batch_compute_metrics
-
+from dataset.countdown_dataloader import *
 
 # Read arguments
 def parse_args():
@@ -55,7 +55,7 @@ def parse_args():
         help="The learning rate to use for training.",
     )
     parser.add_argument(
-        "--num-ouputs", type=int, default=5, help="The number of outputs to generate."
+        "--num-outputs", type=int, default=5, help="The number of outputs to generate."
     )
     parser.add_argument(
         "--epsilon", type=float, default=0.1, help="Epsilon value for the training."
@@ -65,6 +65,9 @@ def parse_args():
     )
     parser.add_argument(
         "--mu", type=float, default=1, help="Mu value for the training."
+    )
+    parser.add_argument(
+        "--dataset_type", type=str, default="JSON", help="Using JSON or HuggingFace dataset"
     )
     return parser.parse_args()
 
@@ -91,15 +94,20 @@ def main():
         return
     logger.info("Loading dataset from: %s", dataset_path)
     # Load your dataset here
-    dataset = load_dataset(dataset_path)
+    if args.dataset_type == 'JSON':
+        dataset = Countdown(dataset_path) # Ours
+    else:
+        dataset = Countdown_HF() # HuggingFace
     if dataset is None:
         logger.error("Failed to load dataset from: %s", dataset_path)
         return
     logger.info("Dataset loaded successfully.")
     # Split dataset into train and test sets
-    train_test = dataset.train_test_split(test_size=0.1)
-    dataset = train_test["train"]
-    test_dataset = train_test["test"]
+    dataset_size = len(dataset)
+    test_size = int(0.1 * dataset_size)
+    train_size = dataset_size - test_size
+    generator = torch.Generator().manual_seed(42)
+    dataset, test_dataset = random_split(dataset, [train_size, test_size], generator=generator)
     logger.info("Dataset split into train and test sets.")
 
     batch_size = args.batch_size
