@@ -318,6 +318,8 @@ def calculate_grpo_objective(
     ), "Prob ratios and clipped ratios must have the same shape"
     # Expand the advantages to match the dimensions of prob_ratios
     advantages = advantages.unsqueeze(-1)
+    device = prob_ratios.device
+    advantages = advantages.to(device)
     min_product = torch.min(prob_ratios * advantages, clipped_ratios * advantages)
     assert (
         min_product.shape[0] == model_log_probs.shape[0]
