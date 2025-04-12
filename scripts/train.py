@@ -4,6 +4,7 @@ import sys
 import argparse
 import logging
 import torch
+from dotenv import load_dotenv
 
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -63,13 +64,14 @@ def parse_args():
     parser.add_argument(
         "--beta", type=float, default=0.05, help="Beta value for the training."
     )
-    parser.add_argument(
-        "--mu", type=float, default=1, help="Mu value for the training."
-    )
+    parser.add_argument("--mu", type=int, default=1, help="Mu value for the training.")
     return parser.parse_args()
 
 
 def main():
+    # Load environment variables
+    load_dotenv()
+
     args = parse_args()
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -156,7 +158,7 @@ def main():
     eps = args.epsilon
     beta = args.beta
     mu = args.mu
-    logger.info("Loaded arguments: G=%d, eps=%f, beta=%f, mu=%f", G, eps, beta, mu)
+    logger.info("Loaded arguments: G=%d, eps=%f, beta=%f, mu=%d", G, eps, beta, mu)
 
     # TODO: Revisit is it worth wrapping this in a trainer class: https://huggingface.co/docs/transformers/en/main_classes/trainer
 
@@ -210,8 +212,8 @@ def main():
                     {
                         "epoch": epoch + 1,
                         "batch": batch_iter,
-                        "mean_reward": full_rewards.mean().item(),
-                        "mean_accuracy": full_accuracies.mean().item(),
+                        "test_mean_reward": full_rewards.mean().item(),
+                        "test_mean_accuracy": full_accuracies.mean().item(),
                     }
                 )
 

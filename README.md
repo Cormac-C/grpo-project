@@ -25,14 +25,12 @@ export WANDB_PROJECT= <your project name>
 To generate a custom countdown you can use the following script:
 
 ```dataset script
-python scripts/create_dataset.py --save-dir=./data/countdown.json --num-samples=10000
+python scripts/create_dataset.py --save-dir=./data/main --num-samples=10000
 ```
 
 If you want to change the configuration of the countdown task you can use the following flags:
 
 ```dataset script flags
-python scripts/create_dataset.py --save-dir=./data/main --num-samples=10000 --num-operands=6 --max-target=100 --min-number=1 --max-number=100
-
 python scripts/create_dataset.py --save-dir=./data/small-scale --num-samples=1000 --num-operands=3 --max-target=25 --min-number=1 --max-number=25
 ```
 
@@ -43,5 +41,5 @@ To train the model you can use the following script with flags to set the base m
 ```train script
 python scripts/train.py --base-model=Qwen/Qwen2.5-1.5B --dataset=./data/main/countdown.json --output-dir=./output --num-epochs=1 --batch-size=8 --learning-rate=1e-5 --num-outputs=5 --epsilon=0.1 --beta=0.05 --mu=1
 
-python scripts/train.py --base-model=Qwen/Qwen2.5-0.5B --dataset=./data/small-scale/countdown.json --output-dir=./output --num-epochs=1 --batch-size=8 --learning-rate=1e-5 --num-outputs=3 --epsilon=0.1 --beta=0.05 --mu=1
+python scripts/train.py --base-model=Qwen/Qwen2.5-0.5B --dataset=./data/small-scale/countdown.json --output-dir=./output --num-epochs=1 --batch-size=2 --learning-rate=1e-5 --num-outputs=2 --epsilon=0.1 --beta=0.05 --mu=1
 ```

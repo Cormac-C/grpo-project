@@ -158,6 +158,7 @@ dependencies:
   - pysocks=1.7.1
   - python=3.13.2
   - python-dateutil=2.9.0.post0
+  - python-dotenv=1.1.0
   - python-tzdata=2025.2
   - python-xxhash=3.5.0
   - python_abi=3.13

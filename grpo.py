@@ -1,4 +1,5 @@
 import torch
+import wandb
 import torch.nn.functional as F
 import logging
 from transformers import GenerationConfig, PreTrainedModel, PreTrainedTokenizerBase
@@ -54,7 +55,14 @@ def grpo_iteration(
 
     # Compute rewards and accuracies for each output
     rewards, accuracies = reward_model(outputs, query_batch_raw)
+    logger.info(f"Average Reward: {rewards.mean()}")
     logger.info(f"Average Accuracy: {accuracies.mean()}")
+    wandb.log(
+        {
+            "train_mean_reward": rewards.mean().item(),
+            "train_mean_accuracy": accuracies.mean().item(),
+        }
+    )
 
     # Compute token-level advantage for each token in each output
     advantages = calculate_grpo_advantage(rewards)
@@ -107,12 +115,11 @@ def grpo_iteration(
         # Take the mean loss across the batch
         loss = torch.mean(loss)
         logger.info(f"Loss: {loss.item()}")
+        wandb.log({"train_loss": loss.item()})
         loss.backward()
 
         # Update the policy
         optimizer.step()
-
-        # TODO: add more metrics to track
     clear_cache()
     return policy_model
 
