@@ -55,7 +55,7 @@ def parse_args():
         help="The learning rate to use for training.",
     )
     parser.add_argument(
-        "--num-ouputs", type=int, default=5, help="The number of outputs to generate."
+        "--num-outputs", type=int, default=5, help="The number of outputs to generate."
     )
     parser.add_argument(
         "--epsilon", type=float, default=0.1, help="Epsilon value for the training."
@@ -78,9 +78,23 @@ def main():
     logger.info("Starting training with base model: %s", args.base_model)
 
     # Initialize wandb
-    os.environ["WANDB_API_KEY"] = "your_wandb_api_key"
-    os.environ["WANDB_PROJECT"] = "your_project_name"
-    wandb.init(project="your_project_name", entity="your_entity_name")
+    wandb.login(key=os.environ["WANDB_KEY"], relogin=True, force=True)
+
+    wandb.init(
+        project=os.environ["WANDB_PROJECT"],
+        entity=os.environ["WANDB_ENTITY"],
+        config={
+            "base_model": args.base_model,
+            "dataset": args.dataset,
+            "num_epochs": args.num_epochs,
+            "batch_size": args.batch_size,
+            "learning_rate": args.learning_rate,
+            "num_outputs": args.num_outputs,
+            "epsilon": args.epsilon,
+            "beta": args.beta,
+            "mu": args.mu,
+        },
+    )
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     logger.info("Using device: %s", device)

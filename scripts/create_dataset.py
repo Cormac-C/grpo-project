@@ -16,7 +16,7 @@ def parse_args():
     parser.add_argument(
         "--save-dir",
         type=str,
-        default="/data/countdown.json",
+        default="/data/main",
         help="The directory to save the trained model.",
     )
     parser.add_argument(
