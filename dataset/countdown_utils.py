@@ -4,6 +4,9 @@ from random import randint, seed
 from typing import List, Tuple, Dict, Optional
 import itertools
 import torch
+import logging
+
+logger = logging.getLogger(__name__)
 
 EVAL_MARGIN = 1e-5
 
@@ -83,6 +86,9 @@ def gen_dataset(
         # If we find one, store it and we keep trying till we get our num_samples
         if solution:
             samples.append({"target": target, "numbers": numbers, "solution": solution})
+
+        if len(samples) % 100 == 0:
+            logger.info(f"Generated {len(samples)} of {num_samples} samples so far...")
 
     if save_path:
         with open(save_path, "w") as f:

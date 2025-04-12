@@ -51,7 +51,9 @@ def parse_args():
 
 def main():
     args = parse_args()
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+    )
     logger = logging.getLogger(__name__)
     logger.info("Creating dataset...")
 
@@ -73,3 +75,7 @@ def main():
     )
 
     logger.info(f"Dataset saved to {save_path}")
+
+
+if __name__ == "__main__":
+    main()
