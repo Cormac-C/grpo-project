@@ -240,6 +240,9 @@ def compute_log_probs(
         query_ids.shape[1] == generated_ids.shape[1]
     ), "Query IDs and generated IDs must have the same number of outputs"
 
+    device = policy.device
+    query_ids = query_ids.to(device)
+    generated_ids = generated_ids.to(device)
     input_ids = torch.cat((query_ids, generated_ids), dim=2)
     # Reshape the input IDs to have shape (batch_size * G, max_length)
     input_ids = input_ids.view(-1, input_ids.shape[-1])
