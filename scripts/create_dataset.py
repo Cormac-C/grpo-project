@@ -32,7 +32,7 @@ def parse_args():
         help="The number of operands to use for each sample.",
     )
     parser.add_argument(
-        "--max-target", type=int, default=1000, help="The maximum target value."
+        "--max-target", type=int, default=100, help="The maximum target value."
     )
     parser.add_argument(
         "--min-number", type=int, default=1, help="The minimum number to use."
