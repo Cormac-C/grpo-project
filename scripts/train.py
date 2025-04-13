@@ -76,6 +76,9 @@ def parse_args():
         "--beta", type=float, default=0.05, help="Beta value for the training."
     )
     parser.add_argument("--mu", type=int, default=1, help="Mu value for the training.")
+    parser.add_argument(
+        "--mixed-precision", action="store_true", help="Use mixed precision training."
+    )
     return parser.parse_args()
 
 
@@ -106,6 +109,7 @@ def main():
             "epsilon": args.epsilon,
             "beta": args.beta,
             "mu": args.mu,
+            "mixed_precision": args.mixed_precision,
         },
     )
 
@@ -199,6 +203,7 @@ def main():
                 eps=eps,
                 beta=beta,
                 mu=mu,
+                mixed_precision=args.mixed_precision,
             )
             if batch_iter % EVALUATION_FREQUENCY == 0:
                 logger.info("Batch %d/%d completed.", batch_iter, len(train_dataloader))
