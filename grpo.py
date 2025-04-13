@@ -120,16 +120,17 @@ def grpo_iteration(
         loss = torch.mean(loss)
         logger.info(f"Loss: {loss.item()}")
         wandb.log({"train_loss": loss.item()})
-        loss.backward()
+        if not torch.isnan(loss) and loss > STABILITY_CONST:
+            loss.backward()
 
-        clip_grad_norm_(policy_model.parameters(), max_norm=GRAD_CLIPPING_NORM)
+            clip_grad_norm_(policy_model.parameters(), max_norm=GRAD_CLIPPING_NORM)
 
-        grad_norm = find_grad_norm(policy_model)
-        logger.info(f"Gradient norm: {grad_norm}")
-        wandb.log({"train_grad_norm": grad_norm})
+            grad_norm = find_grad_norm(policy_model)
+            logger.info(f"Gradient norm: {grad_norm}")
+            wandb.log({"train_grad_norm": grad_norm})
 
-        # Update the policy
-        optimizer.step()
+            # Update the policy
+            optimizer.step()
     clear_cache()
     return policy_model
 
