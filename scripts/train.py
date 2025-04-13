@@ -21,7 +21,8 @@ from grpo import grpo_iteration, evaluate_policy
 from dataset.countdown_utils import batch_compute_metrics
 from dataset.countdown_dataloader import *
 
-MODEL_PRECISION = torch.float32
+POLICY_MODEL_PRECISION = torch.float32
+REF_MODEL_PRECISION = torch.float16
 RANDOM_SEED = 42
 EVALUATION_FREQUENCY = 20
 
@@ -149,7 +150,7 @@ def main():
     model_name = args.base_model
     logger.info("Loading policy model: %s", model_name)
     model = AutoModelForCausalLM.from_pretrained(
-        model_name, torch_dtype=MODEL_PRECISION
+        model_name, torch_dtype=POLICY_MODEL_PRECISION
     )
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     tokenizer.pad_token = tokenizer.eos_token
@@ -158,7 +159,8 @@ def main():
     logger.info("Policy Model loaded successfully.")
     logger.info("Loading reference model: %s", model_name)
     reference_model = AutoModelForCausalLM.from_pretrained(
-        model_name, torch_dtype=MODEL_PRECISION
+        model_name,
+        torch_dtype=REF_MODEL_PRECISION,
     )
     reference_model.eval()
     reference_model.to("cpu")
