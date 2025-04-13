@@ -24,6 +24,7 @@ def grpo_iteration(
     reward_model: Callable,
     tokenizer: PreTrainedTokenizerBase,
     optimizer: torch.optim.Optimizer,
+    scaler: torch.amp.GradScaler,
     G: int,
     eps: float,
     beta: float,
@@ -42,6 +43,7 @@ def grpo_iteration(
         reward_model: The reward model.
         tokenizer: The tokenizer for the policy model.
         optimizer: The optimizer for the policy model.
+        scaler: The gradient scaler for mixed precision training.
         G: The number of outputs to sample.
         eps: The clipping width in GRPO objective.
         beta: The influence of KL div term.
@@ -140,8 +142,9 @@ def grpo_iteration(
             loss = torch.mean(loss)
             logger.info(f"Loss: {loss.item()}")
             wandb.log({"train_loss": loss.item()})
-        loss.backward()
+        scaler.scale(loss).backward()
 
+        scaler.unscale_(optimizer)
         clip_grad_norm_(policy_model.parameters(), max_norm=GRAD_CLIPPING_NORM)
 
         grad_norm = find_grad_norm(policy_model)
@@ -149,7 +152,8 @@ def grpo_iteration(
         wandb.log({"train_grad_norm": grad_norm})
 
         # Update the policy
-        optimizer.step()
+        scaler.step(optimizer)
+        scaler.update()
     clear_cache()
     return policy_model
 
