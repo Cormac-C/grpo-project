@@ -120,7 +120,7 @@ def grpo_iteration(
         loss = torch.mean(loss)
         logger.info(f"Loss: {loss.item()}")
         wandb.log({"train_loss": loss.item()})
-        if not torch.isnan(loss) and loss > STABILITY_CONST:
+        if not torch.isnan(loss) and torch.abs(loss) > STABILITY_CONST:
             loss.backward()
 
             clip_grad_norm_(policy_model.parameters(), max_norm=GRAD_CLIPPING_NORM)
