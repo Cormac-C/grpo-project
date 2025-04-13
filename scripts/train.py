@@ -21,6 +21,8 @@ from grpo import grpo_iteration, evaluate_policy
 from dataset.countdown_utils import batch_compute_metrics
 from dataset.countdown_dataloader import *
 
+MODEL_PRECISION = torch.float32
+
 
 # Read arguments
 def parse_args():
@@ -144,7 +146,9 @@ def main():
     # Load the model and send to GPUs
     model_name = args.base_model
     logger.info("Loading policy model: %s", model_name)
-    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name, torch_dtype=MODEL_PRECISION
+    )
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
@@ -152,7 +156,7 @@ def main():
     logger.info("Policy Model loaded successfully.")
     logger.info("Loading reference model: %s", model_name)
     reference_model = AutoModelForCausalLM.from_pretrained(
-        model_name, torch_dtype=torch.float16
+        model_name, torch_dtype=MODEL_PRECISION
     )
     reference_model.eval()
     reference_model.to("cpu")
@@ -209,7 +213,7 @@ def main():
                         tokenizer=tokenizer,
                         reward_model=batch_compute_metrics,
                         test_batch=test_batch_prompts,
-                        query_batch_raw=test_batch_raw_values,
+                        test_batch_raw=test_batch_raw_values,
                     )
                     full_rewards.append(rewards)
                     full_accuracies.append(accuracies)
