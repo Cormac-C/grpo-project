@@ -53,6 +53,8 @@ def grpo_iteration(
         policy_model, tokenizer, query_batch_prompts, G, max_new_tokens, temperature
     )
 
+    logger.debug(f"Outputs: {outputs}")
+
     clear_cache()
 
     # Compute rewards and accuracies for each output
