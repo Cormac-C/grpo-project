@@ -1,6 +1,7 @@
 import torch
 import wandb
 import torch.nn.functional as F
+from torch.nn.utils import clip_grad_norm_
 import logging
 from transformers import GenerationConfig, PreTrainedModel, PreTrainedTokenizerBase
 from typing import Callable
@@ -8,7 +9,8 @@ import gc
 
 MAX_NEW_TOKENS = 1024
 TEMPERATURE = 1.0
-STABILITY_CONST = 1e-8
+STABILITY_CONST = 1e-4
+GRAD_CLIPPING_NORM = 1.0
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +57,7 @@ def grpo_iteration(
 
     # Compute rewards and accuracies for each output
     rewards, accuracies = reward_model(outputs, query_batch_raw)
+    logger.debug(f"Rewards: {rewards}")
     logger.info(f"Average Reward: {rewards.mean()}")
     logger.info(f"Average Accuracy: {accuracies.mean()}")
     wandb.log(
@@ -66,6 +69,7 @@ def grpo_iteration(
 
     # Compute token-level advantage for each token in each output
     advantages = calculate_grpo_advantage(rewards)
+    logger.debug(f"Advantages: {advantages}")
 
     #  Compute log probabilities for reference model and pre-update policy, no gradients here
     with torch.no_grad():
@@ -118,10 +122,30 @@ def grpo_iteration(
         wandb.log({"train_loss": loss.item()})
         loss.backward()
 
+        clip_grad_norm_(policy_model.parameters(), max_norm=GRAD_CLIPPING_NORM)
+
+        grad_norm = find_grad_norm(policy_model)
+        logger.info(f"Gradient norm: {grad_norm}")
+        wandb.log({"train_grad_norm": grad_norm})
+
         # Update the policy
         optimizer.step()
     clear_cache()
     return policy_model
+
+
+def find_grad_norm(model: PreTrainedModel) -> float:
+    norm = torch.norm(
+        torch.stack(
+            [
+                torch.norm(p.grad.detach(), 2)
+                for p in model.parameters()
+                if p.grad is not None
+            ]
+        ),
+        2,
+    )
+    return norm.item()
 
 
 def clear_cache():
