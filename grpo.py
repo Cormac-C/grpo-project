@@ -396,6 +396,7 @@ def evaluate_policy(
             max_new_tokens=max_new_tokens,
             temperature=temperature,
         )
+        logger.debug(f"Evaluate Outputs: {outputs}")
 
     clear_cache()
 
