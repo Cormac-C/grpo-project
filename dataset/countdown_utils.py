@@ -198,7 +198,7 @@ def compute_metrics(
 
 def batch_compute_metrics(
     outputs: List[List[str]],
-    queries: List[Dict],
+    queries: Dict,
     format_score: float = 0.1,
     full_score: float = 1.0,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -216,13 +216,20 @@ def batch_compute_metrics(
     """
     rewards = []
     accuracies = []
+    # Numbers is a list of tensors each of shape (batchsize), combine them into a single tensor
+    numbers_tensor = torch.stack(queries["numbers"])
 
     for i, output_group in enumerate(outputs):
         group_rewards = []
         group_accuracies = []
 
+        query = {
+            "numbers": numbers_tensor[:, i].tolist(),
+            "target": queries["target"][i],
+        }
+        # TODO: Could revisit for a more efficient implementation
         for output in output_group:
-            metrics = compute_metrics(output, queries[i], format_score, full_score)
+            metrics = compute_metrics(output, query, format_score, full_score)
             group_rewards.append(metrics["reward_score"])
             group_accuracies.append(metrics["accuracy"])
 

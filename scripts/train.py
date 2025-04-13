@@ -22,6 +22,8 @@ from dataset.countdown_utils import batch_compute_metrics
 from dataset.countdown_dataloader import *
 
 MODEL_PRECISION = torch.float32
+RANDOM_SEED = 42
+EVALUATION_FREQUENCY = 20
 
 
 # Read arguments
@@ -128,7 +130,7 @@ def main():
     dataset_size = len(dataset)
     test_size = int(0.1 * dataset_size)
     train_size = dataset_size - test_size
-    generator = torch.Generator().manual_seed(42)
+    generator = torch.Generator().manual_seed(RANDOM_SEED)
     dataset, test_dataset = random_split(
         dataset, [train_size, test_size], generator=generator
     )
@@ -184,12 +186,8 @@ def main():
         batch_iter = 0
         for batch in tqdm(train_dataloader, desc="Training"):
             batch_iter += 1
-            # Transform batch numbers and target into list of dictionaries
-            # This is slightly hacky, might look at instead reworking the reward model to deal with tensors
-            prompt_batch, raw_values_batch = process_batch(batch)
             model = grpo_iteration(
-                query_batch_prompts=prompt_batch,
-                query_batch_raw=raw_values_batch,
+                query_batch=batch,
                 policy_model=model,
                 reference_model=model,
                 reward_model=batch_compute_metrics,
@@ -200,20 +198,16 @@ def main():
                 beta=beta,
                 mu=mu,
             )
-            if batch_iter % 10 == 0:
+            if batch_iter % EVALUATION_FREQUENCY == 0:
                 logger.info("Batch %d/%d completed.", batch_iter, len(train_dataloader))
                 logger.info("Evaluating model...")
                 full_rewards, full_accuracies = [], []
                 for test_batch in tqdm(test_dataloader, desc="Evaluating"):
-                    test_batch_prompts, test_batch_raw_values = process_batch(
-                        test_batch
-                    )
                     rewards, accuracies = evaluate_policy(
                         policy_model=model,
                         tokenizer=tokenizer,
                         reward_model=batch_compute_metrics,
-                        test_batch=test_batch_prompts,
-                        test_batch_raw=test_batch_raw_values,
+                        test_batch=test_batch,
                     )
                     full_rewards.append(rewards)
                     full_accuracies.append(accuracies)
@@ -241,17 +235,6 @@ def main():
     logger.info("Model saved to: %s", output_dir)
     wandb.finish()
     logger.info("Training completed successfully.")
-
-
-def process_batch(batch):
-    batch_numbers = list(map(list, zip(*batch["numbers"])))
-    batch_target = batch["target"]
-    prompt_batch = batch["prompt"]
-    raw_values_batch = [
-        {"numbers": numbers, "target": target}
-        for numbers, target in zip(batch_numbers, batch_target)
-    ]
-    return prompt_batch, raw_values_batch
 
 
 if __name__ == "__main__":

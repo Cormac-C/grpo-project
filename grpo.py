@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from torch.nn.utils import clip_grad_norm_
 import logging
 from transformers import GenerationConfig, PreTrainedModel, PreTrainedTokenizerBase
-from typing import Callable
+from typing import Callable, Dict, List
 import gc
 
 MAX_NEW_TOKENS = 1024
@@ -16,8 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 def grpo_iteration(
-    query_batch_prompts: list[str],
-    query_batch_raw: list[dict],
+    query_batch: Dict,
     policy_model: PreTrainedModel,
     reference_model: PreTrainedModel,
     reward_model: Callable,
@@ -50,7 +49,7 @@ def grpo_iteration(
     """
     # Sample G outputs from the policy for each query in query_batch
     outputs_ids, outputs = sample_outputs(
-        policy_model, tokenizer, query_batch_prompts, G, max_new_tokens, temperature
+        policy_model, tokenizer, query_batch["prompt"], G, max_new_tokens, temperature
     )
 
     logger.debug(f"Outputs: {outputs}")
@@ -58,7 +57,7 @@ def grpo_iteration(
     clear_cache()
 
     # Compute rewards and accuracies for each output
-    rewards, accuracies = reward_model(outputs, query_batch_raw)
+    rewards, accuracies = reward_model(outputs, query_batch)
     logger.debug(f"Rewards: {rewards}")
     logger.info(f"Average Reward: {rewards.mean()}")
     logger.info(f"Average Accuracy: {accuracies.mean()}")
@@ -78,7 +77,7 @@ def grpo_iteration(
         old_log_probs = compute_log_probs(
             policy=policy_model,
             tokenizer=tokenizer,
-            query_batch=query_batch_prompts,
+            query_batch=query_batch["prompt"],
             generated_ids=outputs_ids,
         )
         # Swap the policy model and reference model
@@ -89,7 +88,7 @@ def grpo_iteration(
         reference_model_log_probs = compute_log_probs(
             policy=reference_model,
             tokenizer=tokenizer,
-            query_batch=query_batch_prompts,
+            query_batch=query_batch["prompt"],
             generated_ids=outputs_ids,
         )
         # Swap back the models
@@ -103,7 +102,7 @@ def grpo_iteration(
         model_log_probs = compute_log_probs(
             policy=policy_model,
             tokenizer=tokenizer,
-            query_batch=query_batch_prompts,
+            query_batch=query_batch["prompt"],
             generated_ids=outputs_ids,
         )
         # Compute GRPO objective
@@ -159,11 +158,11 @@ def clear_cache():
 def sample_outputs(
     policy: PreTrainedModel,
     tokenizer: PreTrainedTokenizerBase,
-    query_batch: list[str],
+    query_batch: List[str],
     G: int,
     max_new_tokens: int = MAX_NEW_TOKENS,
     temperature: float = TEMPERATURE,
-) -> tuple[torch.Tensor, list[str]]:
+) -> tuple[torch.Tensor, List[str]]:
     """
     Sample G outputs from the policy for each query in query_batch. Doesn't track gradients or log probs.
 
@@ -239,7 +238,7 @@ def calculate_grpo_advantage(rewards: torch.Tensor) -> torch.Tensor:
 def compute_log_probs(
     policy: PreTrainedModel,
     tokenizer: PreTrainedTokenizerBase,
-    query_batch: list[str],
+    query_batch: List[str],
     generated_ids: torch.Tensor,
 ) -> torch.Tensor:
     """
@@ -368,8 +367,7 @@ def evaluate_policy(
     policy_model: PreTrainedModel,
     tokenizer: PreTrainedTokenizerBase,
     reward_model: Callable,
-    test_batch: list[str],
-    test_batch_raw: list[dict],
+    test_batch: Dict,
     max_new_tokens: int = MAX_NEW_TOKENS,
     temperature: float = TEMPERATURE,
 ):
@@ -380,7 +378,6 @@ def evaluate_policy(
         tokenizer: The tokenizer for the policy model.
         reward_model: The reward model.
         test_batch: Batch of queries, should be of shape (batch_size).
-        test_batch_raw: Raw batch of inputs and targets for queries.
         max_new_tokens: The maximum number of new tokens to generate.
         temperature: The temperature for sampling.
     Returns:
@@ -388,10 +385,10 @@ def evaluate_policy(
     """
     policy_model.eval()
     with torch.no_grad():
-        outputs_ids, outputs = sample_outputs(
+        _, outputs = sample_outputs(
             policy_model,
             tokenizer,
-            test_batch,
+            test_batch["prompt"],
             G=1,
             max_new_tokens=max_new_tokens,
             temperature=temperature,
@@ -401,6 +398,6 @@ def evaluate_policy(
     clear_cache()
 
     # Compute rewards and accuracies for each output
-    rewards, accuracies = reward_model(outputs, test_batch_raw)
+    rewards, accuracies = reward_model(outputs, test_batch)
 
     return rewards, accuracies
