@@ -117,6 +117,10 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     logger.info("Using device: %s", device)
 
+    # Determine the model type
+    model_name = args.base_model
+    model_type = 'instruct' if 'instruct' in model_name.lower() else 'base'
+
     # Load the dataset
     if args.dataset_type == "JSON":
         dataset_path = args.dataset
@@ -124,10 +128,10 @@ def main():
             logger.error("Dataset path does not exist: %s", dataset_path)
             return
         logger.info("Loading dataset from: %s", dataset_path)
-        dataset = Countdown(dataset_path)  # Ours
+        dataset = Countdown(dataset_path, model_type)  # Ours
     else:
         logger.info("Loading dataset from Hugging Face...")
-        dataset = Countdown_HF()  # HuggingFace
+        dataset = Countdown_HF(model_type)  # HuggingFace
     if dataset is None:
         logger.error("Failed to load dataset from: %s", dataset_path)
         return
@@ -154,7 +158,6 @@ def main():
     )
 
     # Load the model and send to GPUs
-    model_name = args.base_model
     logger.info("Loading policy model: %s", model_name)
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
