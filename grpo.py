@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from torch.nn.utils import clip_grad_norm_
 import logging
 from transformers import GenerationConfig, PreTrainedModel, PreTrainedTokenizerBase
-from typing import Callable
+from typing import Callable, Dict, List
 import gc
 
 MAX_NEW_TOKENS = 1024
@@ -12,21 +12,24 @@ TEMPERATURE = 1.0
 STABILITY_CONST = 1e-4
 GRAD_CLIPPING_NORM = 1.0
 
+LOWER_PRECISION = torch.float16
+
 logger = logging.getLogger(__name__)
 
 
 def grpo_iteration(
-    query_batch_prompts: list[str],
-    query_batch_raw: list[dict],
+    query_batch: Dict,
     policy_model: PreTrainedModel,
     reference_model: PreTrainedModel,
     reward_model: Callable,
     tokenizer: PreTrainedTokenizerBase,
     optimizer: torch.optim.Optimizer,
+    scaler: torch.amp.GradScaler,
     G: int,
     eps: float,
     beta: float,
     mu: int,
+    mixed_precision: bool = False,
     max_new_tokens: int = MAX_NEW_TOKENS,
     temperature: float = TEMPERATURE,
 ) -> PreTrainedModel:
@@ -40,6 +43,7 @@ def grpo_iteration(
         reward_model: The reward model.
         tokenizer: The tokenizer for the policy model.
         optimizer: The optimizer for the policy model.
+        scaler: The gradient scaler for mixed precision training.
         G: The number of outputs to sample.
         eps: The clipping width in GRPO objective.
         beta: The influence of KL div term.
@@ -50,7 +54,13 @@ def grpo_iteration(
     """
     # Sample G outputs from the policy for each query in query_batch
     outputs_ids, outputs = sample_outputs(
-        policy_model, tokenizer, query_batch_prompts, G, max_new_tokens, temperature
+        policy_model,
+        tokenizer,
+        query_batch["prompt"],
+        G,
+        max_new_tokens,
+        temperature,
+        mixed_precision,
     )
 
     logger.debug(f"Outputs: {outputs}")
@@ -58,7 +68,7 @@ def grpo_iteration(
     clear_cache()
 
     # Compute rewards and accuracies for each output
-    rewards, accuracies = reward_model(outputs, query_batch_raw)
+    rewards, accuracies = reward_model(outputs, query_batch)
     logger.debug(f"Rewards: {rewards}")
     logger.info(f"Average Reward: {rewards.mean()}")
     logger.info(f"Average Accuracy: {accuracies.mean()}")
@@ -71,68 +81,79 @@ def grpo_iteration(
 
     # Compute token-level advantage for each token in each output
     advantages = calculate_grpo_advantage(rewards)
-    logger.debug(f"Advantages: {advantages}")
+    logger.info(f"Advantages: {advantages}")
 
-    #  Compute log probabilities for reference model and pre-update policy, no gradients here
-    with torch.no_grad():
-        old_log_probs = compute_log_probs(
-            policy=policy_model,
-            tokenizer=tokenizer,
-            query_batch=query_batch_prompts,
-            generated_ids=outputs_ids,
-        )
-        # Swap the policy model and reference model
-        gpu_device = policy_model.device
-        policy_model.to("cpu")
-        reference_model.to(gpu_device)
+    with torch.autocast(
+        device_type="cuda",
+        dtype=LOWER_PRECISION,
+        enabled=mixed_precision and policy_model.device.type == "cuda",
+    ):
+        #  Compute log probabilities for reference model and pre-update policy, no gradients here
+        with torch.no_grad():
+            old_log_probs = compute_log_probs(
+                policy=policy_model,
+                tokenizer=tokenizer,
+                query_batch=query_batch["prompt"],
+                generated_ids=outputs_ids,
+            )
+            # Swap the policy model and reference model
+            gpu_device = policy_model.device
+            policy_model.to("cpu")
+            reference_model.to(gpu_device)
 
-        reference_model_log_probs = compute_log_probs(
-            policy=reference_model,
-            tokenizer=tokenizer,
-            query_batch=query_batch_prompts,
-            generated_ids=outputs_ids,
-        )
-        # Swap back the models
-        reference_model.to("cpu")
-        policy_model.to(gpu_device)
+            reference_model_log_probs = compute_log_probs(
+                policy=reference_model,
+                tokenizer=tokenizer,
+                query_batch=query_batch["prompt"],
+                generated_ids=outputs_ids,
+            )
+            # Swap back the models
+            reference_model.to("cpu")
+            policy_model.to(gpu_device)
     clear_cache()
     for i in range(mu):
         logger.info(f"Update iteration: {i+1}/{mu}")
         optimizer.zero_grad()
-        # Compute log probabilities for the current policy model, this needs gradients
-        model_log_probs = compute_log_probs(
-            policy=policy_model,
-            tokenizer=tokenizer,
-            query_batch=query_batch_prompts,
-            generated_ids=outputs_ids,
-        )
-        # Compute GRPO objective
-        objective = calculate_grpo_objective(
-            model_log_probs=model_log_probs,
-            old_model_log_probs=old_log_probs,
-            ref_model_log_probs=reference_model_log_probs,
-            advantages=advantages,
-            eps=eps,
-            beta=beta,
-        )
+        with torch.autocast(
+            device_type="cuda",
+            dtype=LOWER_PRECISION,
+            enabled=mixed_precision and policy_model.device.type == "cuda",
+        ):
+            # Compute log probabilities for the current policy model, this needs gradients
+            model_log_probs = compute_log_probs(
+                policy=policy_model,
+                tokenizer=tokenizer,
+                query_batch=query_batch["prompt"],
+                generated_ids=outputs_ids,
+            )
+            # Compute GRPO objective
+            objective = calculate_grpo_objective(
+                model_log_probs=model_log_probs,
+                old_model_log_probs=old_log_probs,
+                ref_model_log_probs=reference_model_log_probs,
+                advantages=advantages,
+                eps=eps,
+                beta=beta,
+            )
 
-        # Compute gradient of the GRPO objective
-        loss = -objective
-        # Take the mean loss across the batch
-        loss = torch.mean(loss)
-        logger.info(f"Loss: {loss.item()}")
-        wandb.log({"train_loss": loss.item()})
-        if not torch.isnan(loss) and torch.abs(loss) > STABILITY_CONST:
-            loss.backward()
+            # Compute gradient of the GRPO objective
+            loss = -objective
+            # Take the mean loss across the batch
+            loss = torch.mean(loss)
+            logger.info(f"Loss: {loss.item()}")
+            wandb.log({"train_loss": loss.item()})
+        scaler.scale(loss).backward()
 
-            clip_grad_norm_(policy_model.parameters(), max_norm=GRAD_CLIPPING_NORM)
+        scaler.unscale_(optimizer)
+        clip_grad_norm_(policy_model.parameters(), max_norm=GRAD_CLIPPING_NORM)
 
-            grad_norm = find_grad_norm(policy_model)
-            logger.info(f"Gradient norm: {grad_norm}")
-            wandb.log({"train_grad_norm": grad_norm})
+        grad_norm = find_grad_norm(policy_model)
+        logger.info(f"Gradient norm: {grad_norm}")
+        wandb.log({"train_grad_norm": grad_norm})
 
-            # Update the policy
-            optimizer.step()
+        # Update the policy
+        scaler.step(optimizer)
+        scaler.update()
     clear_cache()
     return policy_model
 
@@ -159,11 +180,12 @@ def clear_cache():
 def sample_outputs(
     policy: PreTrainedModel,
     tokenizer: PreTrainedTokenizerBase,
-    query_batch: list[str],
+    query_batch: List[str],
     G: int,
     max_new_tokens: int = MAX_NEW_TOKENS,
     temperature: float = TEMPERATURE,
-) -> tuple[torch.Tensor, list[str]]:
+    mixed_precision: bool = False,
+) -> tuple[torch.Tensor, List[str]]:
     """
     Sample G outputs from the policy for each query in query_batch. Doesn't track gradients or log probs.
 
@@ -193,8 +215,13 @@ def sample_outputs(
         key: value.to(policy.device) for key, value in tokenized_queries.items()
     }
 
-    with torch.no_grad():
-        output = policy.generate(**tokenized_queries, generation_config=gen_config)
+    with torch.autocast(
+        device_type="cuda",
+        dtype=LOWER_PRECISION,
+        enabled=mixed_precision and policy.device.type == "cuda",
+    ):
+        with torch.no_grad():
+            output = policy.generate(**tokenized_queries, generation_config=gen_config)
     output_ids = output.sequences
 
     generated_ids = output_ids[:, tokenized_queries["input_ids"].shape[1] :]
@@ -239,7 +266,7 @@ def calculate_grpo_advantage(rewards: torch.Tensor) -> torch.Tensor:
 def compute_log_probs(
     policy: PreTrainedModel,
     tokenizer: PreTrainedTokenizerBase,
-    query_batch: list[str],
+    query_batch: List[str],
     generated_ids: torch.Tensor,
 ) -> torch.Tensor:
     """
@@ -368,8 +395,7 @@ def evaluate_policy(
     policy_model: PreTrainedModel,
     tokenizer: PreTrainedTokenizerBase,
     reward_model: Callable,
-    test_batch: list[str],
-    test_batch_raw: list[dict],
+    test_batch: Dict,
     max_new_tokens: int = MAX_NEW_TOKENS,
     temperature: float = TEMPERATURE,
 ):
@@ -380,7 +406,6 @@ def evaluate_policy(
         tokenizer: The tokenizer for the policy model.
         reward_model: The reward model.
         test_batch: Batch of queries, should be of shape (batch_size).
-        test_batch_raw: Raw batch of inputs and targets for queries.
         max_new_tokens: The maximum number of new tokens to generate.
         temperature: The temperature for sampling.
     Returns:
@@ -388,10 +413,10 @@ def evaluate_policy(
     """
     policy_model.eval()
     with torch.no_grad():
-        outputs_ids, outputs = sample_outputs(
+        _, outputs = sample_outputs(
             policy_model,
             tokenizer,
-            test_batch,
+            test_batch["prompt"],
             G=1,
             max_new_tokens=max_new_tokens,
             temperature=temperature,
@@ -401,6 +426,6 @@ def evaluate_policy(
     clear_cache()
 
     # Compute rewards and accuracies for each output
-    rewards, accuracies = reward_model(outputs, test_batch_raw)
+    rewards, accuracies = reward_model(outputs, test_batch)
 
     return rewards, accuracies
