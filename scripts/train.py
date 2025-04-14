@@ -21,8 +21,8 @@ from grpo import grpo_iteration, evaluate_policy
 from dataset.countdown_utils import batch_compute_metrics
 from dataset.countdown_dataloader import *
 
-POLICY_MODEL_PRECISION = torch.float32
-REF_MODEL_PRECISION = torch.float16
+POLICY_MODEL_PRECISION = torch.bfloat16
+REF_MODEL_PRECISION = torch.bfloat16
 RANDOM_SEED = 42
 EVALUATION_FREQUENCY = 20
 
