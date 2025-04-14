@@ -7,6 +7,7 @@ import torch
 from dotenv import load_dotenv
 
 from torch.utils.data import DataLoader, random_split
+from torch.nn.utils.rnn import pad_sequence
 from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
@@ -21,8 +22,8 @@ from grpo import grpo_iteration, evaluate_policy
 from dataset.countdown_utils import batch_compute_metrics
 from dataset.countdown_dataloader import *
 
-POLICY_MODEL_PRECISION = torch.float32
-REF_MODEL_PRECISION = torch.float16
+POLICY_MODEL_PRECISION = torch.bfloat16
+REF_MODEL_PRECISION = torch.bfloat16
 RANDOM_SEED = 42
 EVALUATION_FREQUENCY = 20
 
@@ -146,18 +147,22 @@ def main():
     logger.info("Dataset split into train and test sets.")
 
     batch_size = args.batch_size
-    train_dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+    train_dataloader = DataLoader(
+        dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn
+    )
     logger.info("DataLoader created with batch size: %d", batch_size)
 
     test_batch_size = 16
     test_dataloader = DataLoader(
-        test_dataset, batch_size=test_batch_size, shuffle=False
+        test_dataset, batch_size=test_batch_size, shuffle=False, collate_fn=collate_fn
     )
 
     # Load the model and send to GPUs
     logger.info("Loading policy model: %s", model_name)
     model = AutoModelForCausalLM.from_pretrained(
-        model_name, torch_dtype=POLICY_MODEL_PRECISION
+        model_name,
+        torch_dtype=POLICY_MODEL_PRECISION,
+        attn_implementation="flash_attention_2",
     )
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     tokenizer.pad_token = tokenizer.eos_token
@@ -168,6 +173,7 @@ def main():
     reference_model = AutoModelForCausalLM.from_pretrained(
         model_name,
         torch_dtype=REF_MODEL_PRECISION,
+        attn_implementation="flash_attention_2",
     )
     reference_model.eval()
     reference_model.to("cpu")
@@ -249,6 +255,21 @@ def main():
     logger.info("Model saved to: %s", output_dir)
     wandb.finish()
     logger.info("Training completed successfully.")
+
+
+def collate_fn(batch):
+    prompts = [item["prompt"] for item in batch]
+    targets = torch.tensor([item["target"] for item in batch])
+    numbers = [torch.tensor(item["numbers"]) for item in batch]
+    # Pad the numbers to the same length
+    padded_numbers = pad_sequence(
+        numbers, batch_first=True, padding_value=0
+    )  # Pad with zeros
+    return {
+        "prompt": prompts,
+        "target": targets,
+        "numbers": padded_numbers,
+    }
 
 
 if __name__ == "__main__":

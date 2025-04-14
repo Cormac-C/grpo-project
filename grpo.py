@@ -12,7 +12,7 @@ TEMPERATURE = 1.0
 STABILITY_CONST = 1e-4
 GRAD_CLIPPING_NORM = 1.0
 
-LOWER_PRECISION = torch.float16
+LOWER_PRECISION = torch.bfloat16
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +110,7 @@ def grpo_iteration(
             # Swap back the models
             reference_model.to("cpu")
             policy_model.to(gpu_device)
-    clear_cache()
+
     for i in range(mu):
         logger.info(f"Update iteration: {i+1}/{mu}")
         optimizer.zero_grad()
