@@ -126,6 +126,9 @@ def validate_equation(equation_str: str, available_numbers: List[int]) -> bool:
     Ensures that the left side of the equation (before '=') uses exactly
     the numbers in `available_numbers`
     """
+    available_numbers = [
+        num for num in available_numbers if num > 0
+    ]  # Filter out zero padding from collate function
     try:
         # Split at the '=' to isolate the left side
         if "=" not in equation_str:
