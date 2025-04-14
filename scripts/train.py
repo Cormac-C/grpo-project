@@ -154,7 +154,9 @@ def main():
     model_name = args.base_model
     logger.info("Loading policy model: %s", model_name)
     model = AutoModelForCausalLM.from_pretrained(
-        model_name, torch_dtype=POLICY_MODEL_PRECISION
+        model_name,
+        torch_dtype=POLICY_MODEL_PRECISION,
+        attn_implementation="flash_attention_2",
     )
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     tokenizer.pad_token = tokenizer.eos_token
@@ -165,6 +167,7 @@ def main():
     reference_model = AutoModelForCausalLM.from_pretrained(
         model_name,
         torch_dtype=REF_MODEL_PRECISION,
+        attn_implementation="flash_attention_2",
     )
     reference_model.eval()
     reference_model.to("cpu")
