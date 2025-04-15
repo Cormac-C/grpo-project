@@ -119,7 +119,7 @@ def main():
 
     # Determine the model type
     model_name = args.base_model
-    model_type = 'instruct' if 'instruct' in model_name.lower() else 'base'
+    model_type = "instruct" if "instruct" in model_name.lower() else "base"
 
     # Load the dataset
     if args.dataset_type == "JSON":
@@ -162,7 +162,6 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         torch_dtype=POLICY_MODEL_PRECISION,
-        attn_implementation="flash_attention_2",
     )
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     tokenizer.pad_token = tokenizer.eos_token
@@ -173,7 +172,6 @@ def main():
     reference_model = AutoModelForCausalLM.from_pretrained(
         model_name,
         torch_dtype=REF_MODEL_PRECISION,
-        attn_implementation="flash_attention_2",
     )
     reference_model.eval()
     reference_model.to("cpu")
