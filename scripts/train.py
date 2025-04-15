@@ -110,7 +110,6 @@ def main():
             "epsilon": args.epsilon,
             "beta": args.beta,
             "mu": args.mu,
-            "mixed_precision": args.mixed_precision,
         },
     )
 
@@ -180,9 +179,6 @@ def main():
     # Set up the optimizer
     learning_rate = args.learning_rate
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
-    scaler = torch.amp.GradScaler(
-        "cuda", enabled=args.mixed_precision and device == "cuda"
-    )
     logger.info("Optimizer set up with learning rate: %f", learning_rate)
 
     # Load needed arguments
@@ -209,7 +205,6 @@ def main():
                 reward_model=batch_compute_metrics,
                 tokenizer=tokenizer,
                 optimizer=optimizer,
-                scaler=scaler,
                 G=G,
                 eps=eps,
                 beta=beta,

@@ -28,10 +28,10 @@ To train the model you can use the following script to use the countdown dataset
 python scripts/train.py --base-model=Qwen/Qwen2.5-1.5B --dataset-type=HF --output-dir=./output
 ```
 
-To run a custom training run with a custom data, hyperparameters, mixed precision, etc. you can use a script with flags like the following example.
+To run a custom training run with a custom data, hyperparameters, etc. you can use a script with flags like the following example.
 
 ```
-python scripts/train.py --base-model=Qwen/Qwen2.5-0.5B --dataset-type=JSON --dataset=./data/small-scale/countdown.json --output-dir=./output --num-epochs=1 --batch-size=2 --learning-rate=1e-5 --num-outputs=2 --epsilon=0.1 --beta=0.05 --mu=1 --mixed-precision
+python scripts/train.py --base-model=Qwen/Qwen2.5-0.5B --dataset-type=JSON --dataset=./data/small-scale/countdown.json --output-dir=./output --num-epochs=1 --batch-size=2 --learning-rate=1e-5 --num-outputs=2 --epsilon=0.1 --beta=0.05 --mu=1
 ```
 
 ## Generate Dataset
