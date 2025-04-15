@@ -87,6 +87,7 @@ def grpo_iteration(
                 tokenizer=tokenizer,
                 query_batch=query_batch["prompt"],
                 generated_ids=outputs_ids,
+                temperature=temperature,
             )
         else:
             # If mu=1, we don't need to compute old log probs
@@ -101,6 +102,7 @@ def grpo_iteration(
             tokenizer=tokenizer,
             query_batch=query_batch["prompt"],
             generated_ids=outputs_ids,
+            temperature=temperature,
         )
         # Swap back the models
         reference_model.to("cpu")
@@ -116,6 +118,7 @@ def grpo_iteration(
             tokenizer=tokenizer,
             query_batch=query_batch["prompt"],
             generated_ids=outputs_ids,
+            temperature=temperature,
         )
         # Compute GRPO objective
         objective = calculate_grpo_objective(
@@ -253,6 +256,7 @@ def compute_log_probs(
     tokenizer: PreTrainedTokenizerBase,
     query_batch: List[str],
     generated_ids: torch.Tensor,
+    temperature: float = TEMPERATURE,
 ) -> torch.Tensor:
     """
     Calculate log probabilities for the generated IDs for a given policy.
@@ -261,6 +265,7 @@ def compute_log_probs(
         tokenizer: The tokenizer for the policy model.
         query_batch: Batch of queries, should be of shape (batch_size).
         generated_ids: The generated IDs, should be of shape (batch_size, G, max_length).
+        temperature: The temperature for sampling.
     Returns:
         Log probabilities for the generated IDs, should be of shape (batch_size, G, max_length).
 
@@ -297,6 +302,8 @@ def compute_log_probs(
     # Run forward pass to get the logits
     outputs = policy(input_ids=input_ids, attention_mask=attention_mask)
     logits = outputs.logits
+    # Scale the logits by temperature
+    logits = logits / temperature
     # TODO: Look at shifting the logits to the left similar to aha example, is it necessary?
     generated_logits = logits[:, query_ids.shape[2] :]
 
