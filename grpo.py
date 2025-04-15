@@ -82,66 +82,57 @@ def grpo_iteration(
     # Compute token-level advantage for each token in each output
     advantages = calculate_grpo_advantage(rewards)
     logger.info(f"Advantages: {advantages}")
+    #  Compute log probabilities for reference model and pre-update policy, no gradients here
+    with torch.no_grad():
+        old_log_probs = compute_log_probs(
+            policy=policy_model,
+            tokenizer=tokenizer,
+            query_batch=query_batch["prompt"],
+            generated_ids=outputs_ids,
+        )
+        # Swap the policy model and reference model
+        gpu_device = policy_model.device
+        policy_model.to("cpu")
+        reference_model.to(gpu_device)
 
-    with torch.autocast(
-        device_type="cuda",
-        dtype=LOWER_PRECISION,
-        enabled=mixed_precision and policy_model.device.type == "cuda",
-    ):
-        #  Compute log probabilities for reference model and pre-update policy, no gradients here
-        with torch.no_grad():
-            old_log_probs = compute_log_probs(
-                policy=policy_model,
-                tokenizer=tokenizer,
-                query_batch=query_batch["prompt"],
-                generated_ids=outputs_ids,
-            )
-            # Swap the policy model and reference model
-            gpu_device = policy_model.device
-            policy_model.to("cpu")
-            reference_model.to(gpu_device)
-
-            reference_model_log_probs = compute_log_probs(
-                policy=reference_model,
-                tokenizer=tokenizer,
-                query_batch=query_batch["prompt"],
-                generated_ids=outputs_ids,
-            )
-            # Swap back the models
-            reference_model.to("cpu")
-            policy_model.to(gpu_device)
+        reference_model_log_probs = compute_log_probs(
+            policy=reference_model,
+            tokenizer=tokenizer,
+            query_batch=query_batch["prompt"],
+            generated_ids=outputs_ids,
+        )
+        # Swap back the models
+        reference_model.to("cpu")
+        policy_model.to(gpu_device)
 
     for i in range(mu):
         logger.info(f"Update iteration: {i+1}/{mu}")
         optimizer.zero_grad()
-        with torch.autocast(
-            device_type="cuda",
-            dtype=LOWER_PRECISION,
-            enabled=mixed_precision and policy_model.device.type == "cuda",
-        ):
-            # Compute log probabilities for the current policy model, this needs gradients
-            model_log_probs = compute_log_probs(
-                policy=policy_model,
-                tokenizer=tokenizer,
-                query_batch=query_batch["prompt"],
-                generated_ids=outputs_ids,
-            )
-            # Compute GRPO objective
-            objective = calculate_grpo_objective(
-                model_log_probs=model_log_probs,
-                old_model_log_probs=old_log_probs,
-                ref_model_log_probs=reference_model_log_probs,
-                advantages=advantages,
-                eps=eps,
-                beta=beta,
-            )
 
-            # Compute gradient of the GRPO objective
-            loss = -objective
-            # Take the mean loss across the batch
-            loss = torch.mean(loss)
-            logger.info(f"Loss: {loss.item()}")
-            wandb.log({"train_loss": loss.item()})
+        # Compute log probabilities for the current policy model, this needs gradients
+        model_log_probs = compute_log_probs(
+            policy=policy_model,
+            tokenizer=tokenizer,
+            query_batch=query_batch["prompt"],
+            generated_ids=outputs_ids,
+        )
+        # Compute GRPO objective
+        # TODO: when mu = 1, the model_log_probs and old_log_probs are the same, simplify the grpo objective
+        objective = calculate_grpo_objective(
+            model_log_probs=model_log_probs,
+            old_model_log_probs=old_log_probs,
+            ref_model_log_probs=reference_model_log_probs,
+            advantages=advantages,
+            eps=eps,
+            beta=beta,
+        )
+
+        # Compute gradient of the GRPO objective
+        loss = -objective
+        # Take the mean loss across the batch
+        loss = torch.mean(loss)
+        logger.info(f"Loss: {loss.item()}")
+        wandb.log({"train_loss": loss.item()})
         scaler.scale(loss).backward()
 
         scaler.unscale_(optimizer)
@@ -215,13 +206,8 @@ def sample_outputs(
         key: value.to(policy.device) for key, value in tokenized_queries.items()
     }
 
-    with torch.autocast(
-        device_type="cuda",
-        dtype=LOWER_PRECISION,
-        enabled=mixed_precision and policy.device.type == "cuda",
-    ):
-        with torch.no_grad():
-            output = policy.generate(**tokenized_queries, generation_config=gen_config)
+    with torch.no_grad():
+        output = policy.generate(**tokenized_queries, generation_config=gen_config)
     output_ids = output.sequences
 
     generated_ids = output_ids[:, tokenized_queries["input_ids"].shape[1] :]
@@ -318,6 +304,7 @@ def compute_log_probs(
     log_probs = log_probs.gather(2, generated_ids.unsqueeze(-1)).squeeze(-1)
     batch_size = len(query_batch)
     log_probs = log_probs.view(batch_size, -1, generated_ids.shape[-1])
+    # TODO: make sure there aren't log probs for the padding
 
     assert (
         log_probs.shape[0] * log_probs.shape[1] == generated_ids.shape[0]
@@ -365,7 +352,12 @@ def calculate_grpo_objective(
     Returns:
         The GRPO objective value, of shape (batch_size).
     """
+    # If mu=1, just set prob_ratios to 1
+    logger.info(f"Model log probs: {model_log_probs}")
+    logger.info(f"Old model log probs: {old_model_log_probs}")
     prob_ratios = torch.exp(model_log_probs - old_model_log_probs)
+    logger.info(f"Prob ratios: {prob_ratios}")
+    # TODO: try increasing the epsilon
     clipped_ratios = torch.clamp(prob_ratios, 1 - eps, 1 + eps)
     assert (
         prob_ratios.shape == clipped_ratios.shape
@@ -374,7 +366,10 @@ def calculate_grpo_objective(
     advantages = advantages.unsqueeze(-1)
     device = prob_ratios.device
     advantages = advantages.to(device)
+    # TODO: check if the advantage is being distributed to padding?
+    # Maybe add a mask to the advantages, setting the padding to 0
     min_product = torch.min(prob_ratios * advantages, clipped_ratios * advantages)
+
     assert (
         min_product.shape[0] == model_log_probs.shape[0]
         and min_product.shape[1] == model_log_probs.shape[1]
