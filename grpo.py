@@ -81,12 +81,16 @@ def grpo_iteration(
     logger.info(f"Advantages: {advantages}")
     #  Compute log probabilities for reference model and pre-update policy, no gradients here
     with torch.no_grad():
-        old_log_probs = compute_log_probs(
-            policy=policy_model,
-            tokenizer=tokenizer,
-            query_batch=query_batch["prompt"],
-            generated_ids=outputs_ids,
-        )
+        if mu > 1:
+            old_log_probs = compute_log_probs(
+                policy=policy_model,
+                tokenizer=tokenizer,
+                query_batch=query_batch["prompt"],
+                generated_ids=outputs_ids,
+            )
+        else:
+            # If mu=1, we don't need to compute old log probs
+            old_log_probs = torch.zeros_like(outputs_ids, dtype=torch.bfloat16)
         # Swap the policy model and reference model
         gpu_device = policy_model.device
         policy_model.to("cpu")
@@ -114,13 +118,13 @@ def grpo_iteration(
             generated_ids=outputs_ids,
         )
         # Compute GRPO objective
-        # TODO: when mu = 1, the model_log_probs and old_log_probs are the same, simplify the grpo objective
         objective = calculate_grpo_objective(
             model_log_probs=model_log_probs,
             old_model_log_probs=old_log_probs,
             ref_model_log_probs=reference_model_log_probs,
             padding_mask=padding_mask,
             advantages=advantages,
+            mu=mu,
             eps=eps,
             beta=beta,
         )
@@ -335,6 +339,7 @@ def calculate_grpo_objective(
     ref_model_log_probs: torch.Tensor,
     advantages: torch.Tensor,
     padding_mask: torch.Tensor = None,
+    mu: int = 1,
     eps: float = 0.1,
     beta: float = 0.005,
 ) -> torch.Tensor:
@@ -345,6 +350,7 @@ def calculate_grpo_objective(
         old_model_log_probs: Log probabilities from the old model.
         ref_model_log_probs: Log probabilities from the reference model.
         advantages: The advantages for each token in each output.
+        mu: The number of policy updates per iteration.
         eps: The clipping width in GRPO objective.
         beta: The influence of KL div term.
     Returns:
@@ -353,7 +359,10 @@ def calculate_grpo_objective(
     # If mu=1, just set prob_ratios to 1
     logger.info(f"Model log probs: {model_log_probs}")
     logger.info(f"Old model log probs: {old_model_log_probs}")
-    prob_ratios = torch.exp(model_log_probs - old_model_log_probs)
+    if mu == 1:
+        prob_ratios = torch.ones_like(model_log_probs)
+    else:
+        prob_ratios = torch.exp(model_log_probs - old_model_log_probs)
     logger.info(f"Prob ratios: {prob_ratios}")
     # TODO: try increasing the epsilon
     clipped_ratios = torch.clamp(prob_ratios, 1 - eps, 1 + eps)
@@ -381,6 +390,7 @@ def calculate_grpo_objective(
     kl_div = kl_div_estimator(model_log_probs, ref_model_log_probs)
 
     objective = expected_advantage - beta * kl_div
+    logger.info(f"Objective before mean: {objective}")
     # Take mean across all tokens and all outputs
     objective = torch.mean(objective, dim=[1, 2])
     assert (
