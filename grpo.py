@@ -24,12 +24,10 @@ def grpo_iteration(
     reward_model: Callable,
     tokenizer: PreTrainedTokenizerBase,
     optimizer: torch.optim.Optimizer,
-    scaler: torch.amp.GradScaler,
     G: int,
     eps: float,
     beta: float,
     mu: int,
-    mixed_precision: bool = False,
     max_new_tokens: int = MAX_NEW_TOKENS,
     temperature: float = TEMPERATURE,
 ) -> PreTrainedModel:
@@ -43,7 +41,6 @@ def grpo_iteration(
         reward_model: The reward model.
         tokenizer: The tokenizer for the policy model.
         optimizer: The optimizer for the policy model.
-        scaler: The gradient scaler for mixed precision training.
         G: The number of outputs to sample.
         eps: The clipping width in GRPO objective.
         beta: The influence of KL div term.
@@ -60,16 +57,16 @@ def grpo_iteration(
         G,
         max_new_tokens,
         temperature,
-        mixed_precision,
     )
 
-    logger.debug(f"Outputs: {outputs}")
+    padding_mask = outputs_ids.ne(tokenizer.pad_token_id)
+    logger.info(f"Padding mask shape: {padding_mask.shape}")
+    logger.info(f"Num non-zero tokens in padding mask: {padding_mask.sum()}")
 
     clear_cache()
 
     # Compute rewards and accuracies for each output
     rewards, accuracies = reward_model(outputs, query_batch)
-    logger.debug(f"Rewards: {rewards}")
     logger.info(f"Average Reward: {rewards.mean()}")
     logger.info(f"Average Accuracy: {accuracies.mean()}")
     wandb.log(
@@ -82,69 +79,67 @@ def grpo_iteration(
     # Compute token-level advantage for each token in each output
     advantages = calculate_grpo_advantage(rewards)
     logger.info(f"Advantages: {advantages}")
-
-    with torch.autocast(
-        device_type="cuda",
-        dtype=LOWER_PRECISION,
-        enabled=mixed_precision and policy_model.device.type == "cuda",
-    ):
-        #  Compute log probabilities for reference model and pre-update policy, no gradients here
-        with torch.no_grad():
+    #  Compute log probabilities for reference model and pre-update policy, no gradients here
+    with torch.no_grad():
+        if mu > 1:
             old_log_probs = compute_log_probs(
                 policy=policy_model,
                 tokenizer=tokenizer,
                 query_batch=query_batch["prompt"],
                 generated_ids=outputs_ids,
+                temperature=temperature,
             )
-            # Swap the policy model and reference model
-            gpu_device = policy_model.device
-            policy_model.to("cpu")
-            reference_model.to(gpu_device)
+        else:
+            # If mu=1, we don't need to compute old log probs
+            old_log_probs = torch.zeros_like(outputs_ids, dtype=torch.bfloat16)
+        # Swap the policy model and reference model
+        gpu_device = policy_model.device
+        policy_model.to("cpu")
+        reference_model.to(gpu_device)
 
-            reference_model_log_probs = compute_log_probs(
-                policy=reference_model,
-                tokenizer=tokenizer,
-                query_batch=query_batch["prompt"],
-                generated_ids=outputs_ids,
-            )
-            # Swap back the models
-            reference_model.to("cpu")
-            policy_model.to(gpu_device)
+        reference_model_log_probs = compute_log_probs(
+            policy=reference_model,
+            tokenizer=tokenizer,
+            query_batch=query_batch["prompt"],
+            generated_ids=outputs_ids,
+            temperature=temperature,
+        )
+        # Swap back the models
+        reference_model.to("cpu")
+        policy_model.to(gpu_device)
 
     for i in range(mu):
         logger.info(f"Update iteration: {i+1}/{mu}")
         optimizer.zero_grad()
-        with torch.autocast(
-            device_type="cuda",
-            dtype=LOWER_PRECISION,
-            enabled=mixed_precision and policy_model.device.type == "cuda",
-        ):
-            # Compute log probabilities for the current policy model, this needs gradients
-            model_log_probs = compute_log_probs(
-                policy=policy_model,
-                tokenizer=tokenizer,
-                query_batch=query_batch["prompt"],
-                generated_ids=outputs_ids,
-            )
-            # Compute GRPO objective
-            objective = calculate_grpo_objective(
-                model_log_probs=model_log_probs,
-                old_model_log_probs=old_log_probs,
-                ref_model_log_probs=reference_model_log_probs,
-                advantages=advantages,
-                eps=eps,
-                beta=beta,
-            )
 
-            # Compute gradient of the GRPO objective
-            loss = -objective
-            # Take the mean loss across the batch
-            loss = torch.mean(loss)
-            logger.info(f"Loss: {loss.item()}")
-            wandb.log({"train_loss": loss.item()})
-        scaler.scale(loss).backward()
+        # Compute log probabilities for the current policy model, this needs gradients
+        model_log_probs = compute_log_probs(
+            policy=policy_model,
+            tokenizer=tokenizer,
+            query_batch=query_batch["prompt"],
+            generated_ids=outputs_ids,
+            temperature=temperature,
+        )
+        # Compute GRPO objective
+        objective = calculate_grpo_objective(
+            model_log_probs=model_log_probs,
+            old_model_log_probs=old_log_probs,
+            ref_model_log_probs=reference_model_log_probs,
+            padding_mask=padding_mask,
+            advantages=advantages,
+            mu=mu,
+            eps=eps,
+            beta=beta,
+        )
 
-        scaler.unscale_(optimizer)
+        # Compute gradient of the GRPO objective
+        loss = -objective
+        # Take the mean loss across the batch
+        loss = torch.mean(loss)
+        logger.info(f"Loss: {loss.item()}")
+        wandb.log({"train_loss": loss.item()})
+        loss.backward()
+
         clip_grad_norm_(policy_model.parameters(), max_norm=GRAD_CLIPPING_NORM)
 
         grad_norm = find_grad_norm(policy_model)
@@ -152,8 +147,7 @@ def grpo_iteration(
         wandb.log({"train_grad_norm": grad_norm})
 
         # Update the policy
-        scaler.step(optimizer)
-        scaler.update()
+        optimizer.step()
     clear_cache()
     return policy_model
 
@@ -184,7 +178,6 @@ def sample_outputs(
     G: int,
     max_new_tokens: int = MAX_NEW_TOKENS,
     temperature: float = TEMPERATURE,
-    mixed_precision: bool = False,
 ) -> tuple[torch.Tensor, List[str]]:
     """
     Sample G outputs from the policy for each query in query_batch. Doesn't track gradients or log probs.
@@ -215,13 +208,8 @@ def sample_outputs(
         key: value.to(policy.device) for key, value in tokenized_queries.items()
     }
 
-    with torch.autocast(
-        device_type="cuda",
-        dtype=LOWER_PRECISION,
-        enabled=mixed_precision and policy.device.type == "cuda",
-    ):
-        with torch.no_grad():
-            output = policy.generate(**tokenized_queries, generation_config=gen_config)
+    with torch.no_grad():
+        output = policy.generate(**tokenized_queries, generation_config=gen_config)
     output_ids = output.sequences
 
     generated_ids = output_ids[:, tokenized_queries["input_ids"].shape[1] :]
@@ -268,6 +256,7 @@ def compute_log_probs(
     tokenizer: PreTrainedTokenizerBase,
     query_batch: List[str],
     generated_ids: torch.Tensor,
+    temperature: float = TEMPERATURE,
 ) -> torch.Tensor:
     """
     Calculate log probabilities for the generated IDs for a given policy.
@@ -276,6 +265,7 @@ def compute_log_probs(
         tokenizer: The tokenizer for the policy model.
         query_batch: Batch of queries, should be of shape (batch_size).
         generated_ids: The generated IDs, should be of shape (batch_size, G, max_length).
+        temperature: The temperature for sampling.
     Returns:
         Log probabilities for the generated IDs, should be of shape (batch_size, G, max_length).
 
@@ -299,25 +289,30 @@ def compute_log_probs(
     generated_ids = generated_ids.to(device)
     input_ids = torch.cat((query_ids, generated_ids), dim=2)
     # Reshape the input IDs to have shape (batch_size * G, max_length)
-    input_ids = input_ids.view(-1, input_ids.shape[-1])
+    input_ids = input_ids.reshape(-1, input_ids.shape[-1])
     assert (
         input_ids.shape[0] == query_ids.shape[0] * query_ids.shape[1]
     ), "Input IDs must have the same batch size as query IDs and generated IDs"
 
     input_ids = input_ids.to(policy.device)
     attention_mask = input_ids.ne(tokenizer.pad_token_id).long().to(policy.device)
+    logger.info(f"Attention mask shape: {attention_mask.shape}")
+    logger.info(f"Amount of tokens: {attention_mask.sum()}")
 
     # Run forward pass to get the logits
     outputs = policy(input_ids=input_ids, attention_mask=attention_mask)
     logits = outputs.logits
+    # Scale the logits by temperature
+    logits = logits / temperature
+    # TODO: Look at shifting the logits to the left similar to aha example, is it necessary?
     generated_logits = logits[:, query_ids.shape[2] :]
 
     # Calculate log probabilities
     log_probs = F.log_softmax(generated_logits, dim=-1)
-    generated_ids = generated_ids.view(-1, generated_ids.shape[-1])
+    generated_ids = generated_ids.reshape(-1, generated_ids.shape[-1])
     log_probs = log_probs.gather(2, generated_ids.unsqueeze(-1)).squeeze(-1)
     batch_size = len(query_batch)
-    log_probs = log_probs.view(batch_size, -1, generated_ids.shape[-1])
+    log_probs = log_probs.reshape(batch_size, -1, generated_ids.shape[-1])
 
     assert (
         log_probs.shape[0] * log_probs.shape[1] == generated_ids.shape[0]
@@ -350,6 +345,8 @@ def calculate_grpo_objective(
     old_model_log_probs: torch.Tensor,
     ref_model_log_probs: torch.Tensor,
     advantages: torch.Tensor,
+    padding_mask: torch.Tensor = None,
+    mu: int = 1,
     eps: float = 0.1,
     beta: float = 0.005,
 ) -> torch.Tensor:
@@ -360,12 +357,21 @@ def calculate_grpo_objective(
         old_model_log_probs: Log probabilities from the old model.
         ref_model_log_probs: Log probabilities from the reference model.
         advantages: The advantages for each token in each output.
+        mu: The number of policy updates per iteration.
         eps: The clipping width in GRPO objective.
         beta: The influence of KL div term.
     Returns:
         The GRPO objective value, of shape (batch_size).
     """
-    prob_ratios = torch.exp(model_log_probs - old_model_log_probs)
+    # If mu=1, just set prob_ratios to 1
+    logger.info(f"Model log probs: {model_log_probs}")
+    logger.info(f"Old model log probs: {old_model_log_probs}")
+    if mu == 1:
+        prob_ratios = torch.ones_like(model_log_probs)
+    else:
+        prob_ratios = torch.exp(model_log_probs - old_model_log_probs)
+    logger.info(f"Prob ratios: {prob_ratios}")
+    # TODO: try increasing the epsilon
     clipped_ratios = torch.clamp(prob_ratios, 1 - eps, 1 + eps)
     assert (
         prob_ratios.shape == clipped_ratios.shape
@@ -374,7 +380,15 @@ def calculate_grpo_objective(
     advantages = advantages.unsqueeze(-1)
     device = prob_ratios.device
     advantages = advantages.to(device)
+    # TODO: check if the advantage is being distributed to padding?
+    # Maybe add a mask to the advantages, setting the padding to 0
     min_product = torch.min(prob_ratios * advantages, clipped_ratios * advantages)
+
+    expected_advantage = model_log_probs * min_product
+    # Apply the padding mask to the expected advantage
+    if padding_mask is not None:
+        expected_advantage = expected_advantage * padding_mask
+
     assert (
         min_product.shape[0] == model_log_probs.shape[0]
         and min_product.shape[1] == model_log_probs.shape[1]
@@ -382,7 +396,8 @@ def calculate_grpo_objective(
 
     kl_div = kl_div_estimator(model_log_probs, ref_model_log_probs)
 
-    objective = min_product - beta * kl_div
+    objective = expected_advantage - beta * kl_div
+    logger.info(f"Objective before mean: {objective}")
     # Take mean across all tokens and all outputs
     objective = torch.mean(objective, dim=[1, 2])
     assert (

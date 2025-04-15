@@ -220,14 +220,14 @@ def batch_compute_metrics(
     rewards = []
     accuracies = []
     # Numbers is a list of tensors each of shape (batchsize), combine them into a single tensor
-    numbers_tensor = torch.stack(queries["numbers"])
+    numbers_tensor = queries["numbers"]
 
     for i, output_group in enumerate(outputs):
         group_rewards = []
         group_accuracies = []
 
         query = {
-            "numbers": numbers_tensor[:, i].tolist(),
+            "numbers": numbers_tensor[i].tolist(),
             "target": queries["target"][i],
         }
         # TODO: Could revisit for a more efficient implementation

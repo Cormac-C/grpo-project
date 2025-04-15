@@ -77,9 +77,6 @@ def parse_args():
         "--beta", type=float, default=0.05, help="Beta value for the training."
     )
     parser.add_argument("--mu", type=int, default=1, help="Mu value for the training.")
-    parser.add_argument(
-        "--mixed-precision", action="store_true", help="Use mixed precision training."
-    )
     return parser.parse_args()
 
 
@@ -110,7 +107,6 @@ def main():
             "epsilon": args.epsilon,
             "beta": args.beta,
             "mu": args.mu,
-            "mixed_precision": args.mixed_precision,
         },
     )
 
@@ -119,7 +115,7 @@ def main():
 
     # Determine the model type
     model_name = args.base_model
-    model_type = 'instruct' if 'instruct' in model_name.lower() else 'base'
+    model_type = "instruct" if "instruct" in model_name.lower() else "base"
 
     # Load the dataset
     if args.dataset_type == "JSON":
@@ -162,7 +158,6 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         torch_dtype=POLICY_MODEL_PRECISION,
-        attn_implementation="flash_attention_2",
     )
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     tokenizer.pad_token = tokenizer.eos_token
@@ -173,7 +168,6 @@ def main():
     reference_model = AutoModelForCausalLM.from_pretrained(
         model_name,
         torch_dtype=REF_MODEL_PRECISION,
-        attn_implementation="flash_attention_2",
     )
     reference_model.eval()
     reference_model.to("cpu")
@@ -182,9 +176,6 @@ def main():
     # Set up the optimizer
     learning_rate = args.learning_rate
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
-    scaler = torch.amp.GradScaler(
-        "cuda", enabled=args.mixed_precision and device == "cuda"
-    )
     logger.info("Optimizer set up with learning rate: %f", learning_rate)
 
     # Load needed arguments
@@ -211,12 +202,10 @@ def main():
                 reward_model=batch_compute_metrics,
                 tokenizer=tokenizer,
                 optimizer=optimizer,
-                scaler=scaler,
                 G=G,
                 eps=eps,
                 beta=beta,
                 mu=mu,
-                mixed_precision=args.mixed_precision,
             )
             if batch_iter % EVALUATION_FREQUENCY == 0:
                 logger.info("Batch %d/%d completed.", batch_iter, len(train_dataloader))
