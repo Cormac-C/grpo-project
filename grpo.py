@@ -28,7 +28,6 @@ def grpo_iteration(
     eps: float,
     beta: float,
     mu: int,
-    mixed_precision: bool = False,
     max_new_tokens: int = MAX_NEW_TOKENS,
     temperature: float = TEMPERATURE,
 ) -> PreTrainedModel:
@@ -58,16 +57,16 @@ def grpo_iteration(
         G,
         max_new_tokens,
         temperature,
-        mixed_precision,
     )
 
-    logger.debug(f"Outputs: {outputs}")
+    padding_mask = outputs_ids.ne(tokenizer.pad_token_id)
+    logger.info(f"Padding mask shape: {padding_mask.shape}")
+    logger.info(f"Num non-zero tokens in padding mask: {padding_mask.sum()}")
 
     clear_cache()
 
     # Compute rewards and accuracies for each output
     rewards, accuracies = reward_model(outputs, query_batch)
-    logger.debug(f"Rewards: {rewards}")
     logger.info(f"Average Reward: {rewards.mean()}")
     logger.info(f"Average Accuracy: {accuracies.mean()}")
     wandb.log(
@@ -120,6 +119,7 @@ def grpo_iteration(
             model_log_probs=model_log_probs,
             old_model_log_probs=old_log_probs,
             ref_model_log_probs=reference_model_log_probs,
+            padding_mask=padding_mask,
             advantages=advantages,
             eps=eps,
             beta=beta,
@@ -171,7 +171,6 @@ def sample_outputs(
     G: int,
     max_new_tokens: int = MAX_NEW_TOKENS,
     temperature: float = TEMPERATURE,
-    mixed_precision: bool = False,
 ) -> tuple[torch.Tensor, List[str]]:
     """
     Sample G outputs from the policy for each query in query_batch. Doesn't track gradients or log probs.
@@ -281,26 +280,28 @@ def compute_log_probs(
     generated_ids = generated_ids.to(device)
     input_ids = torch.cat((query_ids, generated_ids), dim=2)
     # Reshape the input IDs to have shape (batch_size * G, max_length)
-    input_ids = input_ids.view(-1, input_ids.shape[-1])
+    input_ids = input_ids.reshape(-1, input_ids.shape[-1])
     assert (
         input_ids.shape[0] == query_ids.shape[0] * query_ids.shape[1]
     ), "Input IDs must have the same batch size as query IDs and generated IDs"
 
     input_ids = input_ids.to(policy.device)
     attention_mask = input_ids.ne(tokenizer.pad_token_id).long().to(policy.device)
+    logger.info(f"Attention mask shape: {attention_mask.shape}")
+    logger.info(f"Amount of tokens: {attention_mask.sum()}")
 
     # Run forward pass to get the logits
     outputs = policy(input_ids=input_ids, attention_mask=attention_mask)
     logits = outputs.logits
+    # TODO: Look at shifting the logits to the left similar to aha example, is it necessary?
     generated_logits = logits[:, query_ids.shape[2] :]
 
     # Calculate log probabilities
     log_probs = F.log_softmax(generated_logits, dim=-1)
-    generated_ids = generated_ids.view(-1, generated_ids.shape[-1])
+    generated_ids = generated_ids.reshape(-1, generated_ids.shape[-1])
     log_probs = log_probs.gather(2, generated_ids.unsqueeze(-1)).squeeze(-1)
     batch_size = len(query_batch)
-    log_probs = log_probs.view(batch_size, -1, generated_ids.shape[-1])
-    # TODO: make sure there aren't log probs for the padding
+    log_probs = log_probs.reshape(batch_size, -1, generated_ids.shape[-1])
 
     assert (
         log_probs.shape[0] * log_probs.shape[1] == generated_ids.shape[0]
@@ -333,6 +334,7 @@ def calculate_grpo_objective(
     old_model_log_probs: torch.Tensor,
     ref_model_log_probs: torch.Tensor,
     advantages: torch.Tensor,
+    padding_mask: torch.Tensor = None,
     eps: float = 0.1,
     beta: float = 0.005,
 ) -> torch.Tensor:
@@ -366,6 +368,11 @@ def calculate_grpo_objective(
     # Maybe add a mask to the advantages, setting the padding to 0
     min_product = torch.min(prob_ratios * advantages, clipped_ratios * advantages)
 
+    expected_advantage = model_log_probs * min_product
+    # Apply the padding mask to the expected advantage
+    if padding_mask is not None:
+        expected_advantage = expected_advantage * padding_mask
+
     assert (
         min_product.shape[0] == model_log_probs.shape[0]
         and min_product.shape[1] == model_log_probs.shape[1]
@@ -373,7 +380,7 @@ def calculate_grpo_objective(
 
     kl_div = kl_div_estimator(model_log_probs, ref_model_log_probs)
 
-    objective = min_product - beta * kl_div
+    objective = expected_advantage - beta * kl_div
     # Take mean across all tokens and all outputs
     objective = torch.mean(objective, dim=[1, 2])
     assert (

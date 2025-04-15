@@ -227,7 +227,7 @@ def batch_compute_metrics(
         group_accuracies = []
 
         query = {
-            "numbers": numbers_tensor[i, :].tolist(),
+            "numbers": numbers_tensor[i].tolist(),
             "target": queries["target"][i],
         }
         # TODO: Could revisit for a more efficient implementation
