@@ -177,6 +177,8 @@ def compute_metrics(
 
     equation = extract_solution(output)
 
+    logger.info(f"Extracted Equation: {equation} | Numbers: {numbers} | Target: {target}")
+
     if equation is not None:
         if validate_equation(equation, numbers):
             result = evaluate_equation(equation)
