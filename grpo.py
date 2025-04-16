@@ -137,14 +137,18 @@ def grpo_iteration(
         # Take the mean loss across the batch
         loss = torch.mean(loss)
         logger.info(f"Loss: {loss.item()}")
-        wandb.log({"train_loss": loss.item()})
+        wandb.log({"train_loss": loss.item()})        
         loss.backward()
+
+        grad_norm = find_grad_norm(policy_model)
+        logger.info(f"Gradient norm (no clipping): {grad_norm}")
+        wandb.log({"train_grad_norm_no_clip": grad_norm})
 
         clip_grad_norm_(policy_model.parameters(), max_norm=GRAD_CLIPPING_NORM)
 
         grad_norm = find_grad_norm(policy_model)
-        logger.info(f"Gradient norm: {grad_norm}")
-        wandb.log({"train_grad_norm": grad_norm})
+        logger.info(f"Gradient norm (clipping): {grad_norm}")
+        wandb.log({"train_grad_norm_w_clip": grad_norm})
 
         # Update the policy
         optimizer.step()
@@ -404,6 +408,8 @@ def calculate_grpo_objective(
 
     kl_div = kl_div_estimator(model_log_probs, ref_model_log_probs)
 
+    logger.info(f"Mean KL Div: {torch.mean(kl_div).item()}")
+    wandb.log({"Mean KL Div": torch.mean(kl_div).item()})
     objective = expected_advantage - beta * kl_div
     logger.info(f"Objective before mean: {objective}")
     # Take mean across all tokens and all outputs
