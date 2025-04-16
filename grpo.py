@@ -7,7 +7,7 @@ from transformers import GenerationConfig, PreTrainedModel, PreTrainedTokenizerB
 from typing import Callable, Dict, List
 import gc
 
-MAX_NEW_TOKENS = 512
+MAX_NEW_TOKENS = 1024
 TEMPERATURE = 1.0
 STABILITY_CONST = 1e-4
 GRAD_CLIPPING_NORM = 10.0
@@ -58,10 +58,6 @@ def grpo_iteration(
         max_new_tokens,
         temperature,
     )
-
-    logger.info(f"Output IDs shape: {output_ids.shape}")
-    logger.info(f"Generated IDs shape: {generated_ids.shape}")
-    logger.info(f"Outputs: {outputs}")
 
     padding_mask = generated_ids.ne(tokenizer.pad_token_id)
     logger.info(f"Padding mask shape: {padding_mask.shape}")
@@ -279,13 +275,20 @@ def compute_log_probs(
     generated_ids: torch.Tensor,
     temperature: float = TEMPERATURE,
 ) -> torch.Tensor:
-    """"""
-    logger.info(f"Output IDs shape: {output_ids.shape}")
-    logger.info(f"Generated IDs shape: {generated_ids.shape}")
-
+    """
+    Calculate log probabilities for the generated IDs for a given policy.
+    Args:
+        policy: The current policy.
+        tokenizer: The tokenizer for the policy model.
+        query_batch: Batch of queries, should be of shape (batch_size).
+        output_ids: The output IDs, should be of shape (batch_size, max_length).
+        generated_ids: The generated IDs, should be of shape (batch_size, G, max_length - query_length).
+        temperature: The temperature for sampling.
+    Returns:
+        Log probabilities for the generated IDs, should be of shape (batch_size, G, max_length).
+    """
     device = policy.device
     output_ids = output_ids.reshape(-1, output_ids.shape[-1])
-    logger.info(f"Output IDs reshaped: {output_ids.shape}")
     output_ids = output_ids.to(device)
 
     attention_mask = output_ids.ne(tokenizer.pad_token_id).long().to(policy.device)
@@ -302,6 +305,7 @@ def compute_log_probs(
     log_probs = log_probs.gather(2, output_ids.unsqueeze(-1)).squeeze(-1)
 
     query_length = output_ids.shape[-1] - generated_ids.shape[-1]
+    logger.info(f"Query length: {query_length}")
 
     # Remove log probs for query tokens
     log_probs = log_probs[:, query_length:]
@@ -374,8 +378,6 @@ def calculate_grpo_objective(
     expected_advantage = model_log_probs * min_product
     # Apply the padding mask to the expected advantage
     if padding_mask is not None:
-        # Shift the padding mask to match the shape of expected advantage
-        # padding_mask = padding_mask[:, :, :-1]
         expected_advantage = expected_advantage * padding_mask
 
     assert (
