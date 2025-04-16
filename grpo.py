@@ -10,7 +10,7 @@ import gc
 MAX_NEW_TOKENS = 1024
 TEMPERATURE = 1.0
 STABILITY_CONST = 1e-4
-GRAD_CLIPPING_NORM = 1.0
+GRAD_CLIPPING_NORM = 10.0
 
 LOWER_PRECISION = torch.bfloat16
 
@@ -304,11 +304,17 @@ def compute_log_probs(
     logits = outputs.logits
     # Scale the logits by temperature
     logits = logits / temperature
+    # Shift logits to the left to get the logits for the generated IDs
+    logits = logits[:, :-1, :]
     # TODO: Look at shifting the logits to the left similar to aha example, is it necessary?
     generated_logits = logits[:, query_ids.shape[2] :]
+    logger.info(f"Generated logits shape: {generated_logits.shape}")
 
     # Calculate log probabilities
     log_probs = F.log_softmax(generated_logits, dim=-1)
+    # Shift generated IDs to the left to match the logits
+    generated_ids = generated_ids[:, :, :-1]
+    logger.info(f"Generated IDs shape: {generated_ids.shape}")
     generated_ids = generated_ids.reshape(-1, generated_ids.shape[-1])
     log_probs = log_probs.gather(2, generated_ids.unsqueeze(-1)).squeeze(-1)
     batch_size = len(query_batch)
@@ -387,6 +393,8 @@ def calculate_grpo_objective(
     expected_advantage = model_log_probs * min_product
     # Apply the padding mask to the expected advantage
     if padding_mask is not None:
+        # Shift the padding mask to match the shape of expected advantage
+        padding_mask = padding_mask[:, :, :-1]
         expected_advantage = expected_advantage * padding_mask
 
     assert (
