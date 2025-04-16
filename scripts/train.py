@@ -198,7 +198,7 @@ def main():
             model = grpo_iteration(
                 query_batch=batch,
                 policy_model=model,
-                reference_model=model,
+                reference_model=reference_model,
                 reward_model=batch_compute_metrics,
                 tokenizer=tokenizer,
                 optimizer=optimizer,
