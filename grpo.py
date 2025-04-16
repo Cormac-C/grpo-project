@@ -10,7 +10,7 @@ import gc
 MAX_NEW_TOKENS = 1024
 TEMPERATURE = 1.0
 STABILITY_CONST = 1e-4
-GRAD_CLIPPING_NORM = 100.0
+GRAD_CLIPPING_NORM = 10.0
 
 LOWER_PRECISION = torch.bfloat16
 
@@ -443,7 +443,6 @@ def evaluate_policy(
             temperature=temperature,
         )
         logger.debug(f"Evaluate Outputs: {outputs}")
-        logger.info(f"Evaluate Outputs: {outputs}")
 
     clear_cache()
 
