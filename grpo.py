@@ -86,7 +86,7 @@ def grpo_iteration(
     #  Compute log probabilities for reference model and pre-update policy, no gradients here
     with torch.no_grad():
         if mu > 1:
-            old_log_probs = compute_log_probs_2(
+            old_log_probs = compute_log_probs(
                 policy=policy_model,
                 tokenizer=tokenizer,
                 query_batch=query_batch["prompt"],
@@ -102,7 +102,7 @@ def grpo_iteration(
         policy_model.to("cpu")
         reference_model.to(gpu_device)
 
-        reference_model_log_probs = compute_log_probs_2(
+        reference_model_log_probs = compute_log_probs(
             policy=reference_model,
             tokenizer=tokenizer,
             query_batch=query_batch["prompt"],
@@ -119,7 +119,7 @@ def grpo_iteration(
         optimizer.zero_grad()
 
         # Compute log probabilities for the current policy model, this needs gradients
-        model_log_probs = compute_log_probs_2(
+        model_log_probs = compute_log_probs(
             policy=policy_model,
             tokenizer=tokenizer,
             query_batch=query_batch["prompt"],
@@ -271,7 +271,7 @@ def calculate_grpo_advantage(rewards: torch.Tensor) -> torch.Tensor:
     return advantages
 
 
-def compute_log_probs_2(
+def compute_log_probs(
     policy: PreTrainedModel,
     tokenizer: PreTrainedTokenizerBase,
     query_batch: List[str],
@@ -301,7 +301,6 @@ def compute_log_probs_2(
     log_probs = F.log_softmax(logits, dim=-1)
     log_probs = log_probs.gather(2, output_ids.unsqueeze(-1)).squeeze(-1)
 
-    # Zero out the log probs for query tokens
     query_length = output_ids.shape[-1] - generated_ids.shape[-1]
 
     # Remove log probs for query tokens
@@ -309,85 +308,6 @@ def compute_log_probs_2(
     batch_size = len(query_batch)
     g = generated_ids.shape[1]
     log_probs = log_probs.reshape(batch_size, g, -1)
-    return log_probs
-
-
-def compute_log_probs(
-    policy: PreTrainedModel,
-    tokenizer: PreTrainedTokenizerBase,
-    query_batch: List[str],
-    generated_ids: torch.Tensor,
-    temperature: float = TEMPERATURE,
-) -> torch.Tensor:
-    """
-    Calculate log probabilities for the generated IDs for a given policy.
-    Args:
-        policy: The current policy.
-        tokenizer: The tokenizer for the policy model.
-        query_batch: Batch of queries, should be of shape (batch_size).
-        generated_ids: The generated IDs, should be of shape (batch_size, G, max_length).
-        temperature: The temperature for sampling.
-    Returns:
-        Log probabilities for the generated IDs, should be of shape (batch_size, G, max_length).
-
-    """
-    tokenized_queries = tokenizer(
-        query_batch, return_tensors="pt", padding=True, truncation=True
-    )
-    query_ids = tokenized_queries["input_ids"]
-
-    # Expand the query IDs to match the shape of generated IDs
-    query_ids = query_ids.unsqueeze(1).expand(-1, generated_ids.shape[1], -1)
-    assert (
-        query_ids.shape[0] == generated_ids.shape[0]
-    ), "Query IDs and generated IDs must have the same batch size"
-    assert (
-        query_ids.shape[1] == generated_ids.shape[1]
-    ), "Query IDs and generated IDs must have the same number of outputs"
-
-    device = policy.device
-    query_ids = query_ids.to(device)
-    generated_ids = generated_ids.to(device)
-    input_ids = torch.cat((query_ids, generated_ids), dim=2)
-    # Reshape the input IDs to have shape (batch_size * G, max_length)
-    input_ids = input_ids.reshape(-1, input_ids.shape[-1])
-    assert (
-        input_ids.shape[0] == query_ids.shape[0] * query_ids.shape[1]
-    ), "Input IDs must have the same batch size as query IDs and generated IDs"
-
-    input_ids = input_ids.to(policy.device)
-    attention_mask = input_ids.ne(tokenizer.pad_token_id).long().to(policy.device)
-    logger.info(f"Attention mask shape: {attention_mask.shape}")
-    logger.info(f"Amount of tokens: {attention_mask.sum()}")
-
-    # Run forward pass to get the logits
-    outputs = policy(input_ids=input_ids, attention_mask=attention_mask)
-    logits = outputs.logits
-    # Scale the logits by temperature
-    logits = logits / temperature
-    # Shift logits to the left to get the logits for the generated IDs
-    logits = logits[:, :-1, :]
-    # TODO: Look at shifting the logits to the left similar to aha example, is it necessary?
-    generated_logits = logits[:, query_ids.shape[2] :]
-    logger.info(f"Generated logits shape: {generated_logits.shape}")
-
-    # Calculate log probabilities
-    log_probs = F.log_softmax(generated_logits, dim=-1)
-    # Shift generated IDs to the left to match the logits
-    generated_ids = generated_ids[:, :, :-1]
-    logger.info(f"Generated IDs shape: {generated_ids.shape}")
-    generated_ids = generated_ids.reshape(-1, generated_ids.shape[-1])
-    log_probs = log_probs.gather(2, generated_ids.unsqueeze(-1)).squeeze(-1)
-    batch_size = len(query_batch)
-    log_probs = log_probs.reshape(batch_size, -1, generated_ids.shape[-1])
-
-    assert (
-        log_probs.shape[0] * log_probs.shape[1] == generated_ids.shape[0]
-    ), "Log probabilities must have the same number of queries and outputs as generated IDs"
-    assert (
-        log_probs.shape[2] == generated_ids.shape[1]
-    ), "Log probabilities must have the same length as generated IDs"
-
     return log_probs
 
 
