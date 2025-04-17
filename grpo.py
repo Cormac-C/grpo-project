@@ -110,6 +110,7 @@ def grpo_iteration(
         reference_model.to("cpu")
         policy_model.to(gpu_device)
 
+    policy_model.train()
     for i in range(mu):
         logger.info(f"Update iteration: {i+1}/{mu}")
         optimizer.zero_grad()
@@ -275,75 +276,73 @@ def calculate_grpo_advantage(rewards: torch.Tensor) -> torch.Tensor:
         A tensor of advantages for each output, shape (batch_size, G).
     """
 
-    advantages = rewards.clone()
-    for i in range(rewards.shape[0]):
-        group_mean = torch.mean(rewards[i])
-        group_std = torch.std(rewards[i])
-        # Normalize the advantage by group mean and std
-        advantages[i] = (rewards[i] - group_mean) / (group_std + STABILITY_CONST)
+    means = torch.mean(rewards, dim=1, keepdim=True)
+    stds = torch.std(rewards, dim=1, keepdim=True)
+    advantages = (rewards - means) / (stds + STABILITY_CONST)
     return advantages
 
 
 def compute_log_probs(
     policy: PreTrainedModel,
-    tokenizer: PreTrainedTokenizerBase,
-    query_batch: List[str],
-    output_ids: torch.Tensor,
-    generated_ids: torch.Tensor,
+    inputs: Dict[str, torch.Tensor],
     temperature: float = TEMPERATURE,
 ) -> torch.Tensor:
     """
-    Calculate log probabilities for the generated IDs for a given policy.
+    The following code closely follows the implementation found at: 
+    https://github.com/McGill-NLP/nano-aha-moment/blob/0ce62ece2681eefad8041b9336fc7d2cd1a3687a/utils.py#L109
+    Compute token-level log probabilities for a sequence using the policy model.
+
+    This function processes input sequences through the policy model and calculates
+    the log probabilities for each token position, taking into account:
+    - Temperature scaling of logits
+    - Causal language modeling requirements
+    - Valid token positions (ignoring padding and query tokens)
+
     Args:
-        policy: The current policy.
-        tokenizer: The tokenizer for the policy model.
-        query_batch: Batch of queries, should be of shape (batch_size).
-        output_ids: The output IDs, should be of shape (batch_size, G, max_length).
-        generated_ids: The generated IDs, should be of shape (batch_size, G, max_length - query_length).
-        temperature: The temperature for sampling.
+        policy: The language model to use for computing log probabilities
+        inputs: Dictionary containing:
+            - input_ids: Token IDs tensor of shape [batch_size, seq_len]
+            - attention_mask: Attention mask tensor of shape [batch_size, seq_len]
+            - labels: Target labels tensor of shape [batch_size, seq_len] where
+              positions to ignore are marked with -100
+        temperature: Scaling factor for logits before softmax (default: TEMPERATURE)
+
     Returns:
-        Log probabilities for the generated IDs, should be of shape (batch_size, G, max_length - query_length).
+        torch.Tensor: Log probabilities tensor of shape [batch_size, seq_len-1]
+            - Each value represents the log probability of the token that appeared
+            - Sequence length is reduced by 1 due to causal modeling requirements
+            - Invalid positions (padding/query tokens) have log probability of 0
     """
-    # Reshape for model input
-    input_ids = output_ids.reshape(-1, output_ids.shape[2])
-    
-    # Create attention mask
-    attention_mask = input_ids.ne(tokenizer.pad_token_id).long()
-    
-    # Move to correct device
+    # Move inputs to correct device
     device = policy.device
-    input_ids = input_ids.to(device)
-    attention_mask = attention_mask.to(device)
+    input_ids = inputs["input_ids"].to(device)
+    attention_mask = inputs["attention_mask"].to(device)
+    labels = inputs["labels"].to(device)
     
     # Run forward pass
-    outputs = policy(input_ids=input_ids, attention_mask=attention_mask)
-    logits = outputs.logits
+    outputs = policy(
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        return_dict=True,
+        use_cache=False,
+    )
     
-    # Scale by temperature
-    logits = logits / temperature
+    # Get logits and apply temperature
+    logits = outputs.logits.float() / temperature
     
-    # Shift logits to get next token predictions
-    logits = logits[:, :-1, :]
-
-    # Matching the shift in the logits
-    input_ids = input_ids[:, 1:]
+    # Shift sequences for causal modeling
+    shift_logits = logits[..., :-1, :].contiguous()
+    shift_labels = labels[..., 1:].contiguous()
     
-    # calculate the query length to remove the log probs for the query tokens
-    query_length = output_ids.shape[2] - generated_ids.shape[2]
+    # Create mask for valid labels
+    label_mask = (shift_labels != -100).float()
+    shift_labels[shift_labels == -100] = 0
     
     # Calculate log probabilities
-    log_probs = F.log_softmax(logits, dim=-1)
-    
-    # Gather log probabilities for actual generated tokens
-    log_probs = log_probs.gather(2, input_ids.unsqueeze(-1)).squeeze(-1)
-    log_probs = log_probs[:, query_length:]
-    
-    # Reshape back to original batch structure
-    log_probs = log_probs.reshape(
-        len(query_batch),  # batch_size
-        generated_ids.shape[1],  # G
-        -1  # sequence length
-    )
+    log_probs = torch.log_softmax(shift_logits, dim=-1)
+    log_probs = torch.gather(log_probs, dim=2, index=shift_labels.unsqueeze(2))
+    log_probs = log_probs.squeeze(2)
+    log_probs = log_probs * label_mask
     
     return log_probs
 
@@ -360,7 +359,8 @@ def kl_div_estimator(
         A tensor of KL divergence values. Calculated with unbiased estimator from http://joschu.net/blog/kl-approx.html (cited in GRPO paper)
     """
     log_quotient = ref_model_log_probs - model_log_probs
-    kl_div = torch.exp(log_quotient) - log_quotient - 1
+    # torch.expm1 is more stable than torch.exp - 1 ref: https://pytorch.org/docs/stable/special.html#torch.special.expm1
+    kl_div = torch.expm1(log_quotient) - log_quotient
     return kl_div
 
 
