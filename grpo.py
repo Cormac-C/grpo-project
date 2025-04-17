@@ -59,7 +59,7 @@ def grpo_iteration(
         temperature,
     )
 
-    padding_mask = generated_ids.ne(tokenizer.pad_token_id)
+    padding_mask = inputs["input_ids"].ne(tokenizer.pad_token_id)
     logger.info(f"Padding mask shape: {padding_mask.shape}")
     logger.info(f"Num non-zero tokens in padding mask: {padding_mask.sum()}")
 
@@ -84,26 +84,20 @@ def grpo_iteration(
         if mu > 1:
             old_log_probs = compute_log_probs(
                 policy=policy_model,
-                tokenizer=tokenizer,
-                query_batch=query_batch["prompt"],
-                output_ids=outputs_ids,
-                generated_ids=generated_ids,
+                inputs=inputs,
                 temperature=temperature,
             )
         else:
             # If mu=1, we don't need to compute old log probs
-            old_log_probs = torch.zeros_like(generated_ids, dtype=torch.bfloat16)
+            old_log_probs = torch.zeros_like(inputs["input_ids"], dtype=torch.bfloat16)
         # Swap the policy model and reference model
         gpu_device = policy_model.device
         policy_model.to("cpu")
         reference_model.to(gpu_device)
 
         reference_model_log_probs = compute_log_probs(
-            policy=reference_model,
-            tokenizer=tokenizer,
-            query_batch=query_batch["prompt"],
-            output_ids=outputs_ids,
-            generated_ids=generated_ids,
+            policy=policy_model,
+            inputs=inputs,  
             temperature=temperature,
         )
         # Swap back the models
@@ -118,10 +112,7 @@ def grpo_iteration(
         # Compute log probabilities for the current policy model, this needs gradients
         model_log_probs = compute_log_probs(
             policy=policy_model,
-            tokenizer=tokenizer,
-            query_batch=query_batch["prompt"],
-            output_ids=outputs_ids,
-            generated_ids=generated_ids,
+            inputs=inputs,  
             temperature=temperature,
         )
         # Compute GRPO objective
@@ -458,7 +449,7 @@ def evaluate_policy(
     """
     policy_model.eval()
     with torch.no_grad():
-        _, _, outputs = sample_outputs(
+        _, outputs = sample_outputs(
             policy_model,
             tokenizer,
             test_batch["prompt"],
