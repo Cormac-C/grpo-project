@@ -330,7 +330,8 @@ def kl_div_estimator(
         A tensor of KL divergence values. Calculated with unbiased estimator from http://joschu.net/blog/kl-approx.html (cited in GRPO paper)
     """
     log_quotient = ref_model_log_probs - model_log_probs
-    kl_div = torch.exp(log_quotient) - log_quotient - 1
+    # torch.expm1 is more stable than torch.exp - 1 ref: https://pytorch.org/docs/stable/special.html#torch.special.expm1
+    kl_div = torch.expm1(log_quotient) - log_quotient
     return kl_div
 
 
@@ -365,7 +366,6 @@ def calculate_grpo_objective(
     else:
         prob_ratios = torch.exp(model_log_probs - old_model_log_probs)
     logger.info(f"Prob ratios: {prob_ratios}")
-    # TODO: try increasing the epsilon
     clipped_ratios = torch.clamp(prob_ratios, 1 - eps, 1 + eps)
     assert (
         prob_ratios.shape == clipped_ratios.shape
