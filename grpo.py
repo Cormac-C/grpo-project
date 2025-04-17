@@ -260,12 +260,10 @@ def calculate_grpo_advantage(rewards: torch.Tensor) -> torch.Tensor:
         A tensor of advantages for each output, shape (batch_size, G).
     """
 
-    advantages = rewards.clone()
-    for i in range(rewards.shape[0]):
-        group_mean = torch.mean(rewards[i])
-        group_std = torch.std(rewards[i])
-        # Normalize the advantage by group mean and std
-        advantages[i] = (rewards[i] - group_mean) / (group_std + STABILITY_CONST)
+    means = torch.mean(rewards, dim=1, keepdim=True)
+    stds = torch.std(rewards, dim=1, keepdim=True)
+    # Normalize the advantage by group mean and std
+    advantages = (rewards - means) / (stds + STABILITY_CONST)
     return advantages
 
 
