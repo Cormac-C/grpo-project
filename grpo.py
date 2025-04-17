@@ -96,7 +96,7 @@ def grpo_iteration(
         reference_model.to(gpu_device)
 
         reference_model_log_probs = compute_log_probs(
-            policy=policy_model,
+            policy=reference_model,
             inputs=inputs,  
             temperature=temperature,
         )
