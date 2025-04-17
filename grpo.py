@@ -60,7 +60,6 @@ def grpo_iteration(
     )
 
     padding_mask = generated_ids.ne(tokenizer.pad_token_id)
-    logger.info(f"Padding mask shape: {padding_mask.shape}")
     logger.info(f"Num non-zero tokens in padding mask: {padding_mask.sum()}")
 
     clear_cache()
@@ -85,13 +84,12 @@ def grpo_iteration(
             old_log_probs = compute_log_probs(
                 policy=policy_model,
                 tokenizer=tokenizer,
-                query_batch=query_batch["prompt"],
                 output_ids=output_ids,
                 generated_ids=generated_ids,
                 temperature=temperature,
             )
         else:
-            # If mu=1, we don't need to compute old log probs
+            # If mu=1, we don't need to compute old log probs, these are dummy values
             old_log_probs = torch.zeros_like(generated_ids, dtype=torch.bfloat16)
         # Swap the policy model and reference model
         gpu_device = policy_model.device
@@ -100,7 +98,6 @@ def grpo_iteration(
         reference_model_log_probs = compute_log_probs(
             policy=reference_model,
             tokenizer=tokenizer,
-            query_batch=query_batch["prompt"],
             output_ids=output_ids,
             generated_ids=generated_ids,
             temperature=temperature,
@@ -117,7 +114,6 @@ def grpo_iteration(
         model_log_probs = compute_log_probs(
             policy=policy_model,
             tokenizer=tokenizer,
-            query_batch=query_batch["prompt"],
             output_ids=output_ids,
             generated_ids=generated_ids,
             temperature=temperature,
@@ -159,6 +155,13 @@ def grpo_iteration(
 
 
 def find_grad_norm(model: PreTrainedModel) -> float:
+    """
+    Find the gradient norm of the model parameters.
+    Args:
+        model: The model to find the gradient norm for.
+    Returns:
+        The gradient norm of the model parameters.
+    """
     norm = torch.norm(
         torch.stack(
             [
@@ -173,6 +176,9 @@ def find_grad_norm(model: PreTrainedModel) -> float:
 
 
 def clear_cache():
+    """
+    Clear the GPU cache and collect garbage to free up GPU memory.
+    """
     gc.collect()
     torch.cuda.empty_cache()
 
@@ -193,6 +199,8 @@ def sample_outputs(
         tokenizer: The tokenizer for the policy model.
         query_batch: Batch of queries, a list of strings of length batch_size.
         G: The number of outputs to sample.
+        max_new_tokens: The maximum number of new tokens to generate.
+        temperature: The temperature for sampling.
 
     Returns:
         Output ids, a tensor of shape (batch_size, G, max_length).
@@ -230,20 +238,15 @@ def sample_outputs(
 
     # Reshape the generated IDs and output IDs to have shape (batch_size, G, max_length)
     output_ids_reshaped = output_ids.reshape(batch_size, G, -1)
+    generated_ids_reshaped = generated_ids.view(batch_size, G, -1)
+
     assert (
         output_ids_reshaped.shape[0] == tokenized_queries["input_ids"].shape[0]
-    ), "Output IDs must have the same batch size as input IDs"
+        and generated_ids_reshaped.shape[0] == tokenized_queries["input_ids"].shape[0]
+    ), "Output IDs and Generated IDs must have the same batch size as input IDs"
     assert (
-        output_ids_reshaped.shape[1] == G
-    ), "Output IDs must have the same number of outputs as G"
-
-    generated_ids_reshaped = generated_ids.view(batch_size, G, -1)
-    assert (
-        generated_ids_reshaped.shape[0] == tokenized_queries["input_ids"].shape[0]
-    ), "Generated IDs must have the same batch size as input IDs"
-    assert (
-        generated_ids_reshaped.shape[1] == G
-    ), "Generated IDs must have the same number of outputs as G"
+        output_ids_reshaped.shape[1] == G and generated_ids_reshaped.shape[1] == G
+    ), "Output IDs and Generated IDs must have the same number of outputs as G"
 
     return output_ids_reshaped, generated_ids_reshaped, responses_reshaped
 
@@ -269,7 +272,6 @@ def calculate_grpo_advantage(rewards: torch.Tensor) -> torch.Tensor:
 def compute_log_probs(
     policy: PreTrainedModel,
     tokenizer: PreTrainedTokenizerBase,
-    query_batch: List[str],
     output_ids: torch.Tensor,
     generated_ids: torch.Tensor,
     temperature: float = TEMPERATURE,
@@ -279,7 +281,6 @@ def compute_log_probs(
     Args:
         policy: The current policy.
         tokenizer: The tokenizer for the policy model.
-        query_batch: Batch of queries, should be of shape (batch_size).
         output_ids: The output IDs, should be of shape (batch_size, max_length).
         generated_ids: The generated IDs, should be of shape (batch_size, G, max_length - query_length).
         temperature: The temperature for sampling.
@@ -308,7 +309,7 @@ def compute_log_probs(
 
     # Remove log probs for query tokens
     log_probs = log_probs[:, query_length:]
-    batch_size = len(query_batch)
+    batch_size = generated_ids.shape[0]
     g = generated_ids.shape[1]
     log_probs = log_probs.reshape(batch_size, g, -1)
     return log_probs
