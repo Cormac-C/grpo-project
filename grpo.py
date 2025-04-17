@@ -50,7 +50,7 @@ def grpo_iteration(
         The updated policy.
     """
     # Sample G outputs from the policy for each query in query_batch
-    outputs_ids, outputs = sample_outputs(
+    outputs_ids, generated_ids, outputs = sample_outputs(
         policy_model,
         tokenizer,
         query_batch["prompt"],
@@ -86,7 +86,8 @@ def grpo_iteration(
                 policy=policy_model,
                 tokenizer=tokenizer,
                 query_batch=query_batch["prompt"],
-                generated_ids=outputs_ids,
+                output_ids=outputs_ids,
+                generated_ids=generated_ids,
                 temperature=temperature,
             )
         else:
@@ -101,7 +102,8 @@ def grpo_iteration(
             policy=reference_model,
             tokenizer=tokenizer,
             query_batch=query_batch["prompt"],
-            generated_ids=outputs_ids,
+            output_ids=outputs_ids,
+            generated_ids=generated_ids,
             temperature=temperature,
         )
         # Swap back the models
@@ -117,7 +119,8 @@ def grpo_iteration(
             policy=policy_model,
             tokenizer=tokenizer,
             query_batch=query_batch["prompt"],
-            generated_ids=outputs_ids,
+            output_ids=outputs_ids,
+            generated_ids=generated_ids,
             temperature=temperature,
         )
         # Compute GRPO objective
@@ -182,7 +185,7 @@ def sample_outputs(
     G: int,
     max_new_tokens: int = MAX_NEW_TOKENS,
     temperature: float = TEMPERATURE,
-) -> tuple[torch.Tensor, List[str]]:
+) -> tuple[torch.Tensor, torch.Tensor, List[List[str]]]:
     """
     Sample G outputs from the policy for each query in query_batch. Doesn't track gradients or log probs.
 
@@ -191,10 +194,13 @@ def sample_outputs(
         tokenizer: The tokenizer for the policy model.
         query_batch: Batch of queries, a list of strings of length batch_size.
         G: The number of outputs to sample.
+        max_new_tokens: Maximum number of new tokens to generate.
+        temperature: Temperature for sampling.
 
     Returns:
-        Generated ids, a tensor of shape (batch_size, G, max_length).
-        Generated text, a list of strings of shape (batch_size, G).
+        output_ids: A tensor of shape (batch_size, G, max_length) containing the complete sequences (including input).
+        generated_ids: A tensor of shape (batch_size, G, max_new_tokens) containing only the generated tokens.
+        outputs: A list of lists of strings of shape (batch_size, G) containing the generated text.
     """
     gen_config = GenerationConfig(
         max_new_tokens=max_new_tokens,
@@ -205,6 +211,7 @@ def sample_outputs(
         output_scores=False,
     )
 
+    # Tokenize queries and move to device
     tokenized_queries = tokenizer(
         query_batch, return_tensors="pt", padding=True, truncation=True
     )
@@ -212,29 +219,51 @@ def sample_outputs(
         key: value.to(policy.device) for key, value in tokenized_queries.items()
     }
 
+    # Generate outputs
     with torch.no_grad():
         output = policy.generate(**tokenized_queries, generation_config=gen_config)
+    
+    # Get the full output sequences (including input)
     output_ids = output.sequences
-
-    generated_ids = output_ids[:, tokenized_queries["input_ids"].shape[1] :]
-
+    
+    # Get only the generated part (excluding input)
+    generated_ids = output_ids[:, tokenized_queries["input_ids"].shape[1]:]
+    
+    # Decode the generated tokens
     batch_responses = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
     # Reshape the responses to have shape (batch_size, G), each item contains the generated text and log probs
     batch_size = len(query_batch)
     responses_reshaped = [
         batch_responses[i * G : (i + 1) * G] for i in range(batch_size)
     ]
-
-    # Reshape the generated IDs to have shape (batch_size, G, max_length)
-    generated_ids_reshaped = generated_ids.view(batch_size, G, -1)
+    
+    # Reshape the output IDs to (batch_size, G, max_length)
+    output_ids = output_ids.reshape(batch_size, G, -1)
+    
+    # Reshape the generated IDs to (batch_size, G, max_new_tokens)
+    generated_ids = generated_ids.reshape(batch_size, G, -1)
+    
+    # Verify shapes
     assert (
-        generated_ids_reshaped.shape[0] == tokenized_queries["input_ids"].shape[0]
-    ), "Generated IDs must have the same batch size as input IDs"
+        output_ids.shape[0] == tokenized_queries["input_ids"].shape[0]
+    ), "Output IDs must have the same batch size as input IDs"
     assert (
-        generated_ids_reshaped.shape[1] == G
+        output_ids.shape[1] == G
+    ), "Output IDs must have the same number of outputs as G"
+    assert (
+        generated_ids.shape[0] == batch_size
+    ), "Generated IDs must have the same batch size as input"
+    assert (
+        generated_ids.shape[1] == G
     ), "Generated IDs must have the same number of outputs as G"
+    assert (
+        len(responses_reshaped) == batch_size
+    ), "Outputs must have the same batch size as input"
+    assert all(
+        len(group) == G for group in responses_reshaped
+    ), "Each output group must have G responses"
 
-    return generated_ids_reshaped, responses_reshaped
+    return output_ids, generated_ids, responses_reshaped
 
 
 def calculate_grpo_advantage(rewards: torch.Tensor) -> torch.Tensor:
@@ -259,6 +288,7 @@ def compute_log_probs(
     policy: PreTrainedModel,
     tokenizer: PreTrainedTokenizerBase,
     query_batch: List[str],
+    output_ids: torch.Tensor,
     generated_ids: torch.Tensor,
     temperature: float = TEMPERATURE,
 ) -> torch.Tensor:
@@ -268,69 +298,53 @@ def compute_log_probs(
         policy: The current policy.
         tokenizer: The tokenizer for the policy model.
         query_batch: Batch of queries, should be of shape (batch_size).
-        generated_ids: The generated IDs, should be of shape (batch_size, G, max_length).
+        output_ids: The output IDs, should be of shape (batch_size, G, max_length).
+        generated_ids: The generated IDs, should be of shape (batch_size, G, max_length - query_length).
         temperature: The temperature for sampling.
     Returns:
         Log probabilities for the generated IDs, should be of shape (batch_size, G, max_length).
-
     """
-    tokenized_queries = tokenizer(
-        query_batch, return_tensors="pt", padding=True, truncation=True
-    )
-    query_ids = tokenized_queries["input_ids"]
-
-    # Expand the query IDs to match the shape of generated IDs
-    query_ids = query_ids.unsqueeze(1).expand(-1, generated_ids.shape[1], -1)
-    assert (
-        query_ids.shape[0] == generated_ids.shape[0]
-    ), "Query IDs and generated IDs must have the same batch size"
-    assert (
-        query_ids.shape[1] == generated_ids.shape[1]
-    ), "Query IDs and generated IDs must have the same number of outputs"
-
+    # Reshape for model input
+    input_ids = output_ids.reshape(-1, output_ids.shape[2])
+    
+    # Create attention mask
+    attention_mask = input_ids.ne(tokenizer.pad_token_id).long()
+    
+    # Move to correct device
     device = policy.device
-    query_ids = query_ids.to(device)
-    generated_ids = generated_ids.to(device)
-    input_ids = torch.cat((query_ids, generated_ids), dim=2)
-    # Reshape the input IDs to have shape (batch_size * G, max_length)
-    input_ids = input_ids.reshape(-1, input_ids.shape[-1])
-    assert (
-        input_ids.shape[0] == query_ids.shape[0] * query_ids.shape[1]
-    ), "Input IDs must have the same batch size as query IDs and generated IDs"
-
-    input_ids = input_ids.to(policy.device)
-    attention_mask = input_ids.ne(tokenizer.pad_token_id).long().to(policy.device)
-    logger.info(f"Attention mask shape: {attention_mask.shape}")
-    logger.info(f"Amount of tokens: {attention_mask.sum()}")
-
-    # Run forward pass to get the logits
+    input_ids = input_ids.to(device)
+    attention_mask = attention_mask.to(device)
+    
+    # Run forward pass
     outputs = policy(input_ids=input_ids, attention_mask=attention_mask)
     logits = outputs.logits
-    # Scale the logits by temperature
+    
+    # Scale by temperature
     logits = logits / temperature
-    # Shift logits to the left to get the logits for the generated IDs
+    
+    # Shift logits to get next token predictions
     logits = logits[:, :-1, :]
-    # TODO: Look at shifting the logits to the left similar to aha example, is it necessary?
-    generated_logits = logits[:, query_ids.shape[2] :]
-    logger.info(f"Generated logits shape: {generated_logits.shape}")
 
+    # Matching the shift in the logits
+    input_ids = input_ids[:, 1:]
+    
+    # Get logits for generated tokens only
+    query_length = input_ids.shape[2] - generated_ids.shape[2]
+    
     # Calculate log probabilities
-    log_probs = F.log_softmax(generated_logits, dim=-1)
-    # Shift generated IDs to the left to match the logits
-    generated_ids = generated_ids[:, :, :-1]
-    logger.info(f"Generated IDs shape: {generated_ids.shape}")
-    generated_ids = generated_ids.reshape(-1, generated_ids.shape[-1])
-    log_probs = log_probs.gather(2, generated_ids.unsqueeze(-1)).squeeze(-1)
-    batch_size = len(query_batch)
-    log_probs = log_probs.reshape(batch_size, -1, generated_ids.shape[-1])
-
-    assert (
-        log_probs.shape[0] * log_probs.shape[1] == generated_ids.shape[0]
-    ), "Log probabilities must have the same number of queries and outputs as generated IDs"
-    assert (
-        log_probs.shape[2] == generated_ids.shape[1]
-    ), "Log probabilities must have the same length as generated IDs"
-
+    log_probs = F.log_softmax(logits, dim=-1)
+    
+    # Gather log probabilities for actual generated tokens
+    log_probs = log_probs.gather(2, input_ids.unsqueeze(-1)).squeeze(-1)
+    log_probs = log_probs[:, query_length:]
+    
+    # Reshape back to original batch structure
+    log_probs = log_probs.reshape(
+        len(query_batch),  # batch_size
+        generated_ids.shape[1],  # G
+        -1  # sequence length
+    )
+    
     return log_probs
 
 
@@ -442,7 +456,7 @@ def evaluate_policy(
     """
     policy_model.eval()
     with torch.no_grad():
-        _, outputs = sample_outputs(
+        _, _, outputs = sample_outputs(
             policy_model,
             tokenizer,
             test_batch["prompt"],
