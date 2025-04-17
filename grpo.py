@@ -59,7 +59,7 @@ def grpo_iteration(
         temperature,
     )
 
-    padding_mask = outputs_ids.ne(tokenizer.pad_token_id)
+    padding_mask = generated_ids.ne(tokenizer.pad_token_id)
     logger.info(f"Padding mask shape: {padding_mask.shape}")
     logger.info(f"Num non-zero tokens in padding mask: {padding_mask.sum()}")
 
@@ -92,7 +92,7 @@ def grpo_iteration(
             )
         else:
             # If mu=1, we don't need to compute old log probs
-            old_log_probs = torch.zeros_like(outputs_ids, dtype=torch.bfloat16)
+            old_log_probs = torch.zeros_like(generated_ids, dtype=torch.bfloat16)
         # Swap the policy model and reference model
         gpu_device = policy_model.device
         policy_model.to("cpu")
@@ -302,7 +302,7 @@ def compute_log_probs(
         generated_ids: The generated IDs, should be of shape (batch_size, G, max_length - query_length).
         temperature: The temperature for sampling.
     Returns:
-        Log probabilities for the generated IDs, should be of shape (batch_size, G, max_length).
+        Log probabilities for the generated IDs, should be of shape (batch_size, G, max_length - query_length).
     """
     # Reshape for model input
     input_ids = output_ids.reshape(-1, output_ids.shape[2])
@@ -328,8 +328,8 @@ def compute_log_probs(
     # Matching the shift in the logits
     input_ids = input_ids[:, 1:]
     
-    # Get logits for generated tokens only
-    query_length = input_ids.shape[2] - generated_ids.shape[2]
+    # calculate the query length to remove the log probs for the query tokens
+    query_length = output_ids.shape[2] - generated_ids.shape[2]
     
     # Calculate log probabilities
     log_probs = F.log_softmax(logits, dim=-1)
