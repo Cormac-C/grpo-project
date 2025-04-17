@@ -279,38 +279,43 @@ def compute_log_probs(
     Args:
         policy: The current policy.
         tokenizer: The tokenizer for the policy model.
-        output_ids: The output IDs, should be of shape (batch_size, max_length).
-        generated_ids: The generated IDs, should be of shape (batch_size, G, max_length - query_length).
+        output_ids: The output IDs, should be of shape (batch_size, G, max_length).
+        generated_ids: The generated IDs, should be of shape (batch_size, G, gen_length).
         temperature: The temperature for sampling.
     Returns:
-        Log probabilities for the generated IDs, should be of shape (batch_size, G, max_length).
+        Log probabilities for the generated IDs, should be of shape (batch_size, G, gen_length).
     """
     device = policy.device
-    output_ids = output_ids.reshape(-1, output_ids.shape[-1])
-    output_ids = output_ids.to(device)
 
-    attention_mask = output_ids.ne(tokenizer.pad_token_id).long().to(policy.device)
-    outputs = policy(input_ids=output_ids, attention_mask=attention_mask)
-    logits = outputs.logits
-    # Scale the logits by temperature
-    logits = logits / temperature
+    batch_size, G, max_length = output_ids.shape
+    generated_length = generated_ids.shape[-1]
+    query_length = max_length - generated_length
+
+    flattened_output_ids = output_ids.reshape(batch_size * G, max_length).to(device)
+    attention_mask = flattened_output_ids.ne(tokenizer.pad_token_id).long().to(device)
+
+    outputs = policy(input_ids=flattened_output_ids, attention_mask=attention_mask)
+
+    # Scale logits by temperature
+    logits = outputs.logits / temperature
     logits = logits[:, :-1, :]
-    # Shift output IDs to the left to match the logits
-    output_ids = output_ids[:, 1:]
-    logger.info(f"Output IDs shape: {output_ids.shape}")
-    # Calculate log probabilities
     log_probs = F.log_softmax(logits, dim=-1)
-    log_probs = log_probs.gather(2, output_ids.unsqueeze(-1)).squeeze(-1)
 
-    query_length = output_ids.shape[-1] - generated_ids.shape[-1]
-    logger.info(f"Query length: {query_length}")
+    # Shift output IDs to the left to match the logits
+    shifted_output_ids = flattened_output_ids[:, 1:]
+
+    log_probs = log_probs.gather(2, shifted_output_ids.unsqueeze(-1)).squeeze(-1)
 
     # Remove log probs for query tokens
-    log_probs = log_probs[:, query_length:]
-    batch_size = generated_ids.shape[0]
-    g = generated_ids.shape[1]
-    log_probs = log_probs.reshape(batch_size, g, -1)
-    return log_probs
+    generated_log_probs = log_probs[:, (query_length - 1) :]
+
+    # Mask the log probs for padding tokens
+    padding_mask = (
+        shifted_output_ids[:, (query_length - 1) :].ne(tokenizer.pad_token_id).long()
+    )
+    generated_log_probs = generated_log_probs * padding_mask
+
+    return generated_log_probs.reshape(batch_size, G, -1)
 
 
 def kl_div_estimator(
