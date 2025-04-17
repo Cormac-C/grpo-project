@@ -301,14 +301,14 @@ def compute_log_probs(
     Args:
         policy: The language model to use for computing log probabilities
         inputs: Dictionary containing:
-            - input_ids: Token IDs tensor of shape [batch_size, seq_len]
-            - attention_mask: Attention mask tensor of shape [batch_size, seq_len]
-            - labels: Target labels tensor of shape [batch_size, seq_len] where
+            - input_ids: Token IDs tensor of shape [batch_size * G, seq_len]
+            - attention_mask: Attention mask tensor of shape [batch_size * G, seq_len]
+            - labels: Target labels tensor of shape [batch_size * G, seq_len] where
               positions to ignore are marked with -100
         temperature: Scaling factor for logits before softmax (default: TEMPERATURE)
 
     Returns:
-        torch.Tensor: Log probabilities tensor of shape [batch_size, seq_len-1]
+        torch.Tensor: Log probabilities tensor of shape [batch_size * G, seq_len-1]
             - Each value represents the log probability of the token that appeared
             - Sequence length is reduced by 1 due to causal modeling requirements
             - Invalid positions (padding/query tokens) have log probability of 0
