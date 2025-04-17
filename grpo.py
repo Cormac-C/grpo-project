@@ -50,7 +50,7 @@ def grpo_iteration(
         The updated policy.
     """
     # Sample G outputs from the policy for each query in query_batch
-    outputs_ids, generated_ids, outputs = sample_outputs(
+    inputs, outputs = sample_outputs(
         policy_model,
         tokenizer,
         query_batch["prompt"],
