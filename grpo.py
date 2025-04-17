@@ -95,7 +95,6 @@ def grpo_iteration(
             old_log_probs = torch.zeros_like(generated_ids, dtype=torch.bfloat16)
         # Swap the policy model and reference model
         gpu_device = policy_model.device
-        policy_model.to("cpu")
         reference_model.to(gpu_device)
 
         reference_model_log_probs = compute_log_probs(
@@ -108,8 +107,8 @@ def grpo_iteration(
         )
         # Swap back the models
         reference_model.to("cpu")
-        policy_model.to(gpu_device)
 
+    policy_model.train()
     for i in range(mu):
         logger.info(f"Update iteration: {i+1}/{mu}")
         optimizer.zero_grad()
