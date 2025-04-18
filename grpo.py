@@ -178,7 +178,7 @@ def sample_outputs(
     G: int,
     max_new_tokens: int = MAX_NEW_TOKENS,
     temperature: float = TEMPERATURE,
-):
+) -> Dict[torch.tensor, list, torch.tensor, torch.tensor]:
     """
     Sample G outputs from the policy for each query in query_batch. Doesn't track gradients or log probs.
 
