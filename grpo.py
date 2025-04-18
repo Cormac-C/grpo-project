@@ -83,7 +83,6 @@ def grpo_iteration(
     # Compute token-level advantage for each token in each output
     advantages = calculate_grpo_advantage(rewards)
     logger.info(f"Advantages: {advantages}")
-    wandb.log(f"Mean Advantages: {advantages.mean()}")
 
     #  Compute log probabilities for reference model and pre-update policy, no gradients here
     with torch.no_grad():
