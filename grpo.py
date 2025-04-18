@@ -123,7 +123,7 @@ def grpo_iteration(
             inputs=model_outputs,
             temperature=temperature,
         )
-        
+
         # Compute GRPO objective
         objective = calculate_grpo_objective(
             model_log_probs=model_log_probs,
@@ -424,7 +424,7 @@ def calculate_grpo_objective(
 
     kl_div = kl_div_estimator(model_log_probs, ref_model_log_probs) # (batch_size * G, seq_length-1)
 
-    logger.info(f"Mean KL Div: {torch.mean(kl_div).item()}") 
+    logger.info(f"Mean KL Div: {torch.mean(kl_div).item()}")
     wandb.log({"Mean KL Div": torch.mean(kl_div).item()})
 
     objective = expected_advantage - beta * kl_div 
