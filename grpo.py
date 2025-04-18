@@ -84,6 +84,7 @@ def grpo_iteration(
     advantages = calculate_grpo_advantage(rewards)
     logger.info(f"Advantages: {advantages}")
     wandb.log(f"Mean Advantages: {advantages.mean()}")
+
     #  Compute log probabilities for reference model and pre-update policy, no gradients here
     with torch.no_grad():
         if mu > 1:
@@ -95,6 +96,7 @@ def grpo_iteration(
         else:
             # If mu=1, we don't need to compute old log probs
             old_log_probs = torch.zeros_like(model_outputs["labels"], dtype=torch.bfloat16)
+
         # Swap the policy model and reference model
         gpu_device = policy_model.device
         policy_model.to("cpu")
@@ -105,6 +107,7 @@ def grpo_iteration(
             inputs=model_outputs,  # The dictionary from sample_outputs
             temperature=temperature,
         )
+
         # Swap back the models
         reference_model.to("cpu")
         policy_model.to(gpu_device)
@@ -120,6 +123,7 @@ def grpo_iteration(
             inputs=model_outputs,
             temperature=temperature,
         )
+        
         # Compute GRPO objective
         objective = calculate_grpo_objective(
             model_log_probs=model_log_probs,
@@ -387,16 +391,20 @@ def calculate_grpo_objective(
     # If mu=1, just set prob_ratios to 1
     logger.info(f"Model log probs: {model_log_probs}")
     logger.info(f"Old model log probs: {old_model_log_probs}")
+
     if mu == 1:
         prob_ratios = torch.ones_like(model_log_probs) # (batch_size * G, seq_length-1)
     else:
         prob_ratios = torch.exp(model_log_probs - old_model_log_probs) # (batch_size * G, seq_length-1)
+
     logger.info(f"Prob ratios: {prob_ratios}")
+
     # TODO: try increasing the epsilon
     clipped_ratios = torch.clamp(prob_ratios, 1 - eps, 1 + eps) # (batch_size * G, seq_length-1)
     assert (
         prob_ratios.shape == clipped_ratios.shape
     ), "Prob ratios and clipped ratios must have the same shape"
+
     # Expand the advantages to match the dimensions of prob_ratios
     advantages = advantages.unsqueeze(-1)
     device = prob_ratios.device
@@ -405,7 +413,7 @@ def calculate_grpo_objective(
     """Reshape the advantages from (batch_size, G, 1) to (batch_size * G, 1) 
     before multiplying it with prob_ratios (batch_size * G, seq_length-1)"""
     advantages = advantages.reshape(prob_ratios.shape[0], -1)
-    min_product = prob_ratios * advantages if mu ==1 else torch.min(prob_ratios * advantages, clipped_ratios * advantages)
+    min_product = prob_ratios * advantages if mu == 1 else torch.min(prob_ratios * advantages, clipped_ratios * advantages)
 
     expected_advantage = model_log_probs * min_product # (batch_size * G, seq_length-1), model_log_probs zero outs padding tokens 
 
@@ -418,10 +426,13 @@ def calculate_grpo_objective(
 
     logger.info(f"Mean KL Div: {torch.mean(kl_div).item()}") 
     wandb.log({"Mean KL Div": torch.mean(kl_div).item()})
+
     objective = expected_advantage - beta * kl_div 
     logger.info(f"Objective before mean: {objective}")
+
     # Take mean across all tokens and all outputs, and batch
     objective = torch.mean(objective)
+
     return objective
 
 
