@@ -341,8 +341,8 @@ def compute_log_probs(
     shift_labels = labels[..., 1:].contiguous()
 
     # Create mask for valid labels
-    label_mask = (shift_labels != -100).float()
-    shift_labels[shift_labels == -100] = 0
+    label_mask = (shift_labels != IGNORE_INDEX).float()
+    shift_labels[shift_labels == IGNORE_INDEX] = 0
 
     # Calculate log probabilities
     log_probs = torch.log_softmax(shift_logits, dim=-1)
