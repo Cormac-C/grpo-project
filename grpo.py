@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from torch.nn.utils import clip_grad_norm_
 import logging
 from transformers import GenerationConfig, PreTrainedModel, PreTrainedTokenizerBase
-from typing import Callable, Dict, List
+from typing import Callable, Dict, List, Any, Tuple
 import gc
 
 MAX_NEW_TOKENS = 1024
@@ -50,7 +50,7 @@ def grpo_iteration(
         The updated policy.
     """
     # Sample G outputs from the policy for each query in query_batch
-    inputs, outputs = sample_outputs(
+    inputs = sample_outputs(
         policy_model,
         tokenizer,
         query_batch["prompt"],
@@ -59,14 +59,16 @@ def grpo_iteration(
         temperature,
     )
 
-    padding_mask = inputs["input_ids"].ne(tokenizer.pad_token_id)
+    all_responses = inputs["all_responses_reshaped"]
+
+    padding_mask = inputs["labels"].ne(tokenizer.pad_token_id)
     logger.info(f"Padding mask shape: {padding_mask.shape}")
     logger.info(f"Num non-zero tokens in padding mask: {padding_mask.sum()}")
 
     clear_cache()
 
     # Compute rewards and accuracies for each output
-    rewards, accuracies = reward_model(outputs, query_batch)
+    rewards, accuracies = reward_model(all_responses, query_batch)
     logger.info(f"Average Reward: {rewards.mean()}")
     logger.info(f"Average Accuracy: {accuracies.mean()}")
     wandb.log(
@@ -89,7 +91,7 @@ def grpo_iteration(
             )
         else:
             # If mu=1, we don't need to compute old log probs
-            old_log_probs = torch.zeros_like(inputs["input_ids"], dtype=torch.bfloat16)
+            old_log_probs = torch.zeros_like(inputs["labels"], dtype=torch.bfloat16)
         # Swap the policy model and reference model
         gpu_device = policy_model.device
         policy_model.to("cpu")
@@ -97,7 +99,7 @@ def grpo_iteration(
 
         reference_model_log_probs = compute_log_probs(
             policy=reference_model,
-            inputs=inputs,  
+            inputs=inputs,  # The dictionary from sample_outputs
             temperature=temperature,
         )
         # Swap back the models
@@ -112,7 +114,7 @@ def grpo_iteration(
         # Compute log probabilities for the current policy model, this needs gradients
         model_log_probs = compute_log_probs(
             policy=policy_model,
-            inputs=inputs,  
+            inputs=inputs,
             temperature=temperature,
         )
         # Compute GRPO objective
@@ -132,7 +134,7 @@ def grpo_iteration(
         # Take the mean loss across the batch
         loss = torch.mean(loss)
         logger.info(f"Loss: {loss.item()}")
-        wandb.log({"train_loss": loss.item()})        
+        wandb.log({"train_loss": loss.item()})
         loss.backward()
 
         grad_norm = find_grad_norm(policy_model)
@@ -177,7 +179,7 @@ def sample_outputs(
     G: int,
     max_new_tokens: int = MAX_NEW_TOKENS,
     temperature: float = TEMPERATURE,
-) -> tuple[torch.Tensor, torch.Tensor, List[List[str]]]:
+) -> Dict[torch.tensor, list, torch.tensor, torch.tensor]:
     """
     Sample G outputs from the policy for each query in query_batch. Doesn't track gradients or log probs.
 
@@ -214,31 +216,31 @@ def sample_outputs(
     # Generate outputs
     with torch.no_grad():
         output = policy.generate(**tokenized_queries, generation_config=gen_config)
-    
+
     # Get the full output sequences (including input)
     output_ids = output.sequences
-    
-    # Get only the generated part (excluding input)
-    generated_ids = output_ids[:, tokenized_queries["input_ids"].shape[1]:]
-    
-    # Decode the generated tokens
+
+    generated_ids = output_ids[:, tokenized_queries["input_ids"].shape[1] :]
+    input_ids = tokenized_queries["input_ids"]
+    attention_mask = tokenized_queries["attention_mask"]
+
     batch_responses = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
     # Reshape the responses to have shape (batch_size, G), each item contains the generated text and log probs
     batch_size = len(query_batch)
     responses_reshaped = [
         batch_responses[i * G : (i + 1) * G] for i in range(batch_size)
     ]
-    
+
     # Reshape the output IDs to (batch_size, G, max_length)
     output_ids = output_ids.reshape(batch_size, G, -1)
-    
+
     # Reshape the generated IDs to (batch_size, G, max_new_tokens)
     generated_ids = generated_ids.reshape(batch_size, G, -1)
-    
+
     # Verify shapes
     assert (
-        output_ids.shape[0] == tokenized_queries["input_ids"].shape[0]
-    ), "Output IDs must have the same batch size as input IDs"
+        generated_ids_reshaped.shape[0] == input_ids.shape[0]
+    ), "Generated IDs must have the same batch size as input IDs"
     assert (
         output_ids.shape[1] == G
     ), "Output IDs must have the same number of outputs as G"
@@ -255,7 +257,29 @@ def sample_outputs(
         len(group) == G for group in responses_reshaped
     ), "Each output group must have G responses"
 
-    return output_ids, generated_ids, responses_reshaped
+    input_ids = input_ids.unsqueeze(1).expand(-1, G, -1).reshape(batch_size * G, -1)
+    attention_mask = (
+        attention_mask.unsqueeze(1).expand(-1, G, -1).reshape(batch_size * G, -1)
+    )
+
+    assert (
+        input_ids.shape[0] == batch_size * G
+    ), "Input IDs must have the size as batch_size * G"
+    assert attention_mask.shape[0] == len(
+        batch_responses
+    ), "Input IDs must have the same number of outputs as G"
+
+    # generated_ids (batch_size*G,  response_max_length)
+    # all_responses (batch_size*G,  response_max_length)
+    # responses_reshaped (batch_size, G, response_max_length)
+    # input_ids     (batch_size*G,    query_max_length)
+    # attention_mask (batch_size*G, query_max_length)
+    return {
+        "labels": generated_ids,
+        "all_responses_reshaped": responses_reshaped,
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+    }
 
 
 def calculate_grpo_advantage(rewards: torch.Tensor) -> torch.Tensor:
@@ -279,7 +303,7 @@ def compute_log_probs(
     temperature: float = TEMPERATURE,
 ) -> torch.Tensor:
     """
-    The following code closely follows the implementation found at: 
+    The following code closely follows the implementation found at:
     https://github.com/McGill-NLP/nano-aha-moment/blob/0ce62ece2681eefad8041b9336fc7d2cd1a3687a/utils.py#L109
 
 
@@ -311,7 +335,7 @@ def compute_log_probs(
     input_ids = inputs["input_ids"].to(device)
     attention_mask = inputs["attention_mask"].to(device)
     labels = inputs["labels"].to(device)
-    
+
     # Run forward pass
     outputs = policy(
         input_ids=input_ids,
@@ -319,24 +343,24 @@ def compute_log_probs(
         return_dict=True,
         use_cache=False,
     )
-    
+
     # Get logits and apply temperature
     logits = outputs.logits.float() / temperature
-    
+
     # Shift sequences for causal modeling
     shift_logits = logits[..., :-1, :].contiguous()
     shift_labels = labels[..., 1:].contiguous()
-    
+
     # Create mask for valid labels
     label_mask = (shift_labels != -100).float()
     shift_labels[shift_labels == -100] = 0
-    
+
     # Calculate log probabilities
     log_probs = torch.log_softmax(shift_logits, dim=-1)
     log_probs = torch.gather(log_probs, dim=2, index=shift_labels.unsqueeze(2))
     log_probs = log_probs.squeeze(2)
     log_probs = log_probs * label_mask
-    
+
     return log_probs
 
 
