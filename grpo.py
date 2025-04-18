@@ -4,14 +4,18 @@ import torch.nn.functional as F
 from torch.nn.utils import clip_grad_norm_
 import logging
 from transformers import GenerationConfig, PreTrainedModel, PreTrainedTokenizerBase
-from typing import Callable, Dict, List
+from typing import Callable, Dict, List, Union, Tuple
 import gc
 
+# Type aliases
+SampleDict = Dict[str, Union[torch.Tensor, List[List[str]]]]
+
+# Global constants
 MAX_NEW_TOKENS = 1024
 TEMPERATURE = 1.0
 STABILITY_CONST = 1e-4
 GRAD_CLIPPING_NORM = 10.0
-
+IGNORE_INDEX = -100
 LOWER_PRECISION = torch.bfloat16
 
 logger = logging.getLogger(__name__)
@@ -35,22 +39,24 @@ def grpo_iteration(
     Perform one iteration of the GRPO algorithm.
 
     Args:
-        query_batch_prompts: Batch of queries.
-        query_batch_raw: Raw batch of inputs and targets for queries.
-        policy_model: The current policy model.
-        reward_model: The reward model.
-        tokenizer: The tokenizer for the policy model.
-        optimizer: The optimizer for the policy model.
-        G: The number of outputs to sample.
-        eps: The clipping width in GRPO objective.
-        beta: The influence of KL div term.
-        mu: The number of policy updates per iteration.
+        query_batch: Dictionary containing the batch of queries and their metadata.
+        policy_model: The current policy model to be optimized.
+        reference_model: The reference model used for KL divergence computation.
+        reward_model: Function that computes rewards for generated responses.
+        tokenizer: Tokenizer for the policy model.
+        optimizer: Optimizer for updating the policy model.
+        G: Number of outputs to sample per query.
+        eps: Clipping width for the GRPO objective.
+        beta: Coefficient for the KL divergence term.
+        mu: Number of policy updates per iteration.
+        max_new_tokens: Maximum number of new tokens to generate per response.
+        temperature: Temperature parameter for sampling.
 
     Returns:
-        The updated policy.
+        PreTrainedModel: The updated policy model after one iteration of GRPO.
     """
     # Sample G outputs from the policy for each query in query_batch
-    outputs_ids, outputs = sample_outputs(
+    model_outputs = sample_outputs(
         policy_model,
         tokenizer,
         query_batch["prompt"],
@@ -59,14 +65,12 @@ def grpo_iteration(
         temperature,
     )
 
-    padding_mask = outputs_ids.ne(tokenizer.pad_token_id)
-    logger.info(f"Padding mask shape: {padding_mask.shape}")
-    logger.info(f"Num non-zero tokens in padding mask: {padding_mask.sum()}")
+    all_responses = model_outputs["all_responses"]
 
     clear_cache()
 
     # Compute rewards and accuracies for each output
-    rewards, accuracies = reward_model(outputs, query_batch)
+    rewards, accuracies = reward_model(all_responses, query_batch)
     logger.info(f"Average Reward: {rewards.mean()}")
     logger.info(f"Average Accuracy: {accuracies.mean()}")
     wandb.log(
@@ -79,19 +83,19 @@ def grpo_iteration(
     # Compute token-level advantage for each token in each output
     advantages = calculate_grpo_advantage(rewards)
     logger.info(f"Advantages: {advantages}")
+
     #  Compute log probabilities for reference model and pre-update policy, no gradients here
     with torch.no_grad():
         if mu > 1:
             old_log_probs = compute_log_probs(
                 policy=policy_model,
-                tokenizer=tokenizer,
-                query_batch=query_batch["prompt"],
-                generated_ids=outputs_ids,
+                inputs=model_outputs,
                 temperature=temperature,
             )
         else:
             # If mu=1, we don't need to compute old log probs
-            old_log_probs = torch.zeros_like(outputs_ids, dtype=torch.bfloat16)
+            old_log_probs = torch.zeros_like(model_outputs["labels"], dtype=torch.bfloat16)
+
         # Swap the policy model and reference model
         gpu_device = policy_model.device
         policy_model.to("cpu")
@@ -99,15 +103,15 @@ def grpo_iteration(
 
         reference_model_log_probs = compute_log_probs(
             policy=reference_model,
-            tokenizer=tokenizer,
-            query_batch=query_batch["prompt"],
-            generated_ids=outputs_ids,
+            inputs=model_outputs,  # The dictionary from sample_outputs
             temperature=temperature,
         )
+
         # Swap back the models
         reference_model.to("cpu")
         policy_model.to(gpu_device)
 
+    policy_model.train()
     for i in range(mu):
         logger.info(f"Update iteration: {i+1}/{mu}")
         optimizer.zero_grad()
@@ -115,17 +119,15 @@ def grpo_iteration(
         # Compute log probabilities for the current policy model, this needs gradients
         model_log_probs = compute_log_probs(
             policy=policy_model,
-            tokenizer=tokenizer,
-            query_batch=query_batch["prompt"],
-            generated_ids=outputs_ids,
+            inputs=model_outputs,
             temperature=temperature,
         )
+
         # Compute GRPO objective
         objective = calculate_grpo_objective(
             model_log_probs=model_log_probs,
             old_model_log_probs=old_log_probs,
             ref_model_log_probs=reference_model_log_probs,
-            padding_mask=padding_mask,
             advantages=advantages,
             mu=mu,
             eps=eps,
@@ -134,10 +136,8 @@ def grpo_iteration(
 
         # Compute gradient of the GRPO objective
         loss = -objective
-        # Take the mean loss across the batch
-        loss = torch.mean(loss)
         logger.info(f"Loss: {loss.item()}")
-        wandb.log({"train_loss": loss.item()})        
+        wandb.log({"train_loss": loss.item()})
         loss.backward()
 
         grad_norm = find_grad_norm(policy_model)
@@ -157,6 +157,15 @@ def grpo_iteration(
 
 
 def find_grad_norm(model: PreTrainedModel) -> float:
+    """
+    Calculate the L2 norm of the gradients of a model.
+
+    Args:
+        model: The model whose gradient norm is to be computed.
+
+    Returns:
+        float: The L2 norm of the model's gradients.
+    """
     norm = torch.norm(
         torch.stack(
             [
@@ -171,6 +180,9 @@ def find_grad_norm(model: PreTrainedModel) -> float:
 
 
 def clear_cache():
+    """
+    Clear GPU cache and perform garbage collection to free up memory.
+    """
     gc.collect()
     torch.cuda.empty_cache()
 
@@ -182,19 +194,25 @@ def sample_outputs(
     G: int,
     max_new_tokens: int = MAX_NEW_TOKENS,
     temperature: float = TEMPERATURE,
-) -> tuple[torch.Tensor, List[str]]:
+) -> SampleDict:
     """
     Sample G outputs from the policy for each query in query_batch. Doesn't track gradients or log probs.
 
     Args:
-        policy: The current policy.
-        tokenizer: The tokenizer for the policy model.
-        query_batch: Batch of queries, a list of strings of length batch_size.
-        G: The number of outputs to sample.
+        policy: The policy model to generate from.
+        tokenizer: Tokenizer for the policy model.
+        query_batch: List of query strings.
+        G: Number of outputs to sample per query.
+        max_new_tokens: Maximum number of new tokens to generate per response.
+        temperature: Temperature parameter for sampling.
 
     Returns:
-        Generated ids, a tensor of shape (batch_size, G, max_length).
-        Generated text, a list of strings of shape (batch_size, G).
+        SampleDict: Dictionary containing:
+            - labels: Tensor of shape (batch_size*G, max_length) with token IDs for responses,
+                     using IGNORE_INDEX for query and padding tokens
+            - all_responses: List of lists of strings of shape (batch_size, G) containing generated text
+            - complete_sequences_ids: Tensor of shape (batch_size*G, max_length) with complete sequences
+            - attention_mask: Attention mask tensor of shape (batch_size*G, max_length)
     """
     gen_config = GenerationConfig(
         max_new_tokens=max_new_tokens,
@@ -205,6 +223,7 @@ def sample_outputs(
         output_scores=False,
     )
 
+    # Tokenize queries and move to device
     tokenized_queries = tokenizer(
         query_batch, return_tensors="pt", padding=True, truncation=True
     )
@@ -212,124 +231,118 @@ def sample_outputs(
         key: value.to(policy.device) for key, value in tokenized_queries.items()
     }
 
+    # Generate outputs
     with torch.no_grad():
         output = policy.generate(**tokenized_queries, generation_config=gen_config)
-    output_ids = output.sequences
 
-    generated_ids = output_ids[:, tokenized_queries["input_ids"].shape[1] :]
+    # Get the full output sequences (including input)
+    complete_sequences_ids = output.sequences
 
-    batch_responses = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
+    query_length  = tokenized_queries["input_ids"].shape[1]
+    responses_ids = complete_sequences_ids[:, query_length:]
+
+    # Put an IGNORE_INDEX over query tokens and padding tokens
+    label_ids = complete_sequences_ids.clone()
+    label_ids[:, :query_length] = IGNORE_INDEX
+    label_ids[label_ids == tokenizer.pad_token_id] = IGNORE_INDEX
+
+    attention_mask = complete_sequences_ids.ne(tokenizer.pad_token_id)
+
     # Reshape the responses to have shape (batch_size, G), each item contains the generated text and log probs
+    batch_responses = tokenizer.batch_decode(responses_ids, skip_special_tokens=True)
     batch_size = len(query_batch)
-    responses_reshaped = [
+    all_responses = [
         batch_responses[i * G : (i + 1) * G] for i in range(batch_size)
     ]
 
-    # Reshape the generated IDs to have shape (batch_size, G, max_length)
-    generated_ids_reshaped = generated_ids.view(batch_size, G, -1)
-    assert (
-        generated_ids_reshaped.shape[0] == tokenized_queries["input_ids"].shape[0]
-    ), "Generated IDs must have the same batch size as input IDs"
-    assert (
-        generated_ids_reshaped.shape[1] == G
-    ), "Generated IDs must have the same number of outputs as G"
-
-    return generated_ids_reshaped, responses_reshaped
+    return {
+        "labels":                  label_ids,
+        "all_responses":           all_responses,
+        "complete_sequences_ids":  complete_sequences_ids,
+        "attention_mask":          attention_mask
+    }
 
 
 def calculate_grpo_advantage(rewards: torch.Tensor) -> torch.Tensor:
     """
-    Calculate advantage for each output.
+    Calculate the advantage for each generated output.
+
     Args:
-        rewards: The rewards for each output, have shape (batch_size, G).
+        rewards: Tensor of shape (batch_size, G) containing rewards for each output.
+
     Returns:
-        A tensor of advantages for each output, shape (batch_size, G).
+        torch.Tensor: Advantage values for each output, same shape as input rewards.
     """
 
-    advantages = rewards.clone()
-    for i in range(rewards.shape[0]):
-        group_mean = torch.mean(rewards[i])
-        group_std = torch.std(rewards[i])
-        # Normalize the advantage by group mean and std
-        advantages[i] = (rewards[i] - group_mean) / (group_std + STABILITY_CONST)
+    means = torch.mean(rewards, dim=1, keepdim=True)
+    stds = torch.std(rewards, dim=1, keepdim=True)
+    advantages = (rewards - means) / (stds + STABILITY_CONST)
     return advantages
 
 
 def compute_log_probs(
     policy: PreTrainedModel,
-    tokenizer: PreTrainedTokenizerBase,
-    query_batch: List[str],
-    generated_ids: torch.Tensor,
+    inputs: SampleDict,
     temperature: float = TEMPERATURE,
 ) -> torch.Tensor:
     """
-    Calculate log probabilities for the generated IDs for a given policy.
+    The following code closely follows the implementation found at:
+    https://github.com/McGill-NLP/nano-aha-moment/blob/0ce62ece2681eefad8041b9336fc7d2cd1a3687a/utils.py#L109
+
+
+    Compute token-level log probabilities for a sequence using the policy model.
+
+    This function processes input sequences through the policy model and calculates
+    the log probabilities for each token position, taking into account:
+    - Temperature scaling of logits
+    - Causal language modeling requirements
+    - Valid token positions (ignoring padding and query tokens)
+
     Args:
-        policy: The current policy.
-        tokenizer: The tokenizer for the policy model.
-        query_batch: Batch of queries, should be of shape (batch_size).
-        generated_ids: The generated IDs, should be of shape (batch_size, G, max_length).
-        temperature: The temperature for sampling.
+        policy: The language model to use for computing log probabilities
+        inputs: Dictionary containing:
+            - complete_sequences_ids: Token IDs tensor of shape [batch_size * G, seq_len]
+            - attention_mask: Attention mask tensor of shape [batch_size * G, seq_len]
+            - labels: Target labels tensor of shape [batch_size * G, seq_len] where
+              positions to ignore are marked with -100
+        temperature: Scaling factor for logits before softmax (default: TEMPERATURE)
+
     Returns:
-        Log probabilities for the generated IDs, should be of shape (batch_size, G, max_length).
-
+        torch.Tensor: Log probabilities tensor of shape [batch_size * G, seq_len-1]
+            - Each value represents the log probability of the token that appeared
+            - Sequence length is reduced by 1 due to causal modeling requirements
+            - Invalid positions (padding/query tokens) have log probability of 0
     """
-    tokenized_queries = tokenizer(
-        query_batch, return_tensors="pt", padding=True, truncation=True
-    )
-    query_ids = tokenized_queries["input_ids"]
-
-    # Expand the query IDs to match the shape of generated IDs
-    query_ids = query_ids.unsqueeze(1).expand(-1, generated_ids.shape[1], -1)
-    assert (
-        query_ids.shape[0] == generated_ids.shape[0]
-    ), "Query IDs and generated IDs must have the same batch size"
-    assert (
-        query_ids.shape[1] == generated_ids.shape[1]
-    ), "Query IDs and generated IDs must have the same number of outputs"
-
+    # Move inputs to correct device
     device = policy.device
-    query_ids = query_ids.to(device)
-    generated_ids = generated_ids.to(device)
-    input_ids = torch.cat((query_ids, generated_ids), dim=2)
-    # Reshape the input IDs to have shape (batch_size * G, max_length)
-    input_ids = input_ids.reshape(-1, input_ids.shape[-1])
-    assert (
-        input_ids.shape[0] == query_ids.shape[0] * query_ids.shape[1]
-    ), "Input IDs must have the same batch size as query IDs and generated IDs"
+    complete_sequences_ids = inputs["complete_sequences_ids"].to(device)
+    attention_mask = inputs["attention_mask"].to(device)
+    labels = inputs["labels"].to(device)
 
-    input_ids = input_ids.to(policy.device)
-    attention_mask = input_ids.ne(tokenizer.pad_token_id).long().to(policy.device)
-    logger.info(f"Attention mask shape: {attention_mask.shape}")
-    logger.info(f"Amount of tokens: {attention_mask.sum()}")
+    # Run forward pass
+    outputs = policy(
+        input_ids=complete_sequences_ids,
+        attention_mask=attention_mask,
+        return_dict=True,
+        use_cache=False,
+    )
 
-    # Run forward pass to get the logits
-    outputs = policy(input_ids=input_ids, attention_mask=attention_mask)
-    logits = outputs.logits
-    # Scale the logits by temperature
-    logits = logits / temperature
-    # Shift logits to the left to get the logits for the generated IDs
-    logits = logits[:, :-1, :]
-    # TODO: Look at shifting the logits to the left similar to aha example, is it necessary?
-    generated_logits = logits[:, query_ids.shape[2] :]
-    logger.info(f"Generated logits shape: {generated_logits.shape}")
+    # Get logits and apply temperature
+    logits = outputs.logits.float() / temperature
+
+    # Shift sequences for causal modeling
+    shift_logits = logits[..., :-1, :].contiguous()
+    shift_labels = labels[..., 1:].contiguous()
+
+    # Create mask for valid labels
+    label_mask = (shift_labels != IGNORE_INDEX).float()
+    shift_labels[shift_labels == IGNORE_INDEX] = 0
 
     # Calculate log probabilities
-    log_probs = F.log_softmax(generated_logits, dim=-1)
-    # Shift generated IDs to the left to match the logits
-    generated_ids = generated_ids[:, :, :-1]
-    logger.info(f"Generated IDs shape: {generated_ids.shape}")
-    generated_ids = generated_ids.reshape(-1, generated_ids.shape[-1])
-    log_probs = log_probs.gather(2, generated_ids.unsqueeze(-1)).squeeze(-1)
-    batch_size = len(query_batch)
-    log_probs = log_probs.reshape(batch_size, -1, generated_ids.shape[-1])
-
-    assert (
-        log_probs.shape[0] * log_probs.shape[1] == generated_ids.shape[0]
-    ), "Log probabilities must have the same number of queries and outputs as generated IDs"
-    assert (
-        log_probs.shape[2] == generated_ids.shape[1]
-    ), "Log probabilities must have the same length as generated IDs"
+    log_probs = torch.log_softmax(shift_logits, dim=-1)
+    log_probs = torch.gather(log_probs, dim=2, index=shift_labels.unsqueeze(2))
+    log_probs = log_probs.squeeze(2)
+    log_probs = log_probs * label_mask
 
     return log_probs
 
@@ -342,11 +355,13 @@ def kl_div_estimator(
     Args:
         model_log_probs: Log probabilities from the model.
         ref_model_log_probs: Log probabilities from the reference model.
+
     Returns:
         A tensor of KL divergence values. Calculated with unbiased estimator from http://joschu.net/blog/kl-approx.html (cited in GRPO paper)
     """
     log_quotient = ref_model_log_probs - model_log_probs
-    kl_div = torch.exp(log_quotient) - log_quotient - 1
+    # torch.expm1 is more stable than torch.exp - 1 ref: https://pytorch.org/docs/stable/special.html#torch.special.expm1
+    kl_div = torch.expm1(log_quotient) - log_quotient
     return kl_div
 
 
@@ -355,7 +370,6 @@ def calculate_grpo_objective(
     old_model_log_probs: torch.Tensor,
     ref_model_log_probs: torch.Tensor,
     advantages: torch.Tensor,
-    padding_mask: torch.Tensor = None,
     mu: int = 1,
     eps: float = 0.1,
     beta: float = 0.005,
@@ -371,52 +385,53 @@ def calculate_grpo_objective(
         eps: The clipping width in GRPO objective.
         beta: The influence of KL div term.
     Returns:
-        The GRPO objective value, of shape (batch_size).
+        torch.Tensor: The GRPO objective value, of shape (batch_size).
     """
     # If mu=1, just set prob_ratios to 1
     logger.info(f"Model log probs: {model_log_probs}")
     logger.info(f"Old model log probs: {old_model_log_probs}")
+
     if mu == 1:
-        prob_ratios = torch.ones_like(model_log_probs)
+        prob_ratios = torch.ones_like(model_log_probs) # (batch_size * G, seq_length-1)
     else:
-        prob_ratios = torch.exp(model_log_probs - old_model_log_probs)
+        prob_ratios = torch.exp(model_log_probs - old_model_log_probs) # (batch_size * G, seq_length-1)
+
     logger.info(f"Prob ratios: {prob_ratios}")
+
     # TODO: try increasing the epsilon
-    clipped_ratios = torch.clamp(prob_ratios, 1 - eps, 1 + eps)
+    clipped_ratios = torch.clamp(prob_ratios, 1 - eps, 1 + eps) # (batch_size * G, seq_length-1)
     assert (
         prob_ratios.shape == clipped_ratios.shape
     ), "Prob ratios and clipped ratios must have the same shape"
+
     # Expand the advantages to match the dimensions of prob_ratios
     advantages = advantages.unsqueeze(-1)
     device = prob_ratios.device
     advantages = advantages.to(device)
-    # TODO: check if the advantage is being distributed to padding?
-    # Maybe add a mask to the advantages, setting the padding to 0
-    min_product = torch.min(prob_ratios * advantages, clipped_ratios * advantages)
 
-    expected_advantage = model_log_probs * min_product
-    # Apply the padding mask to the expected advantage
-    if padding_mask is not None:
-        # Shift the padding mask to match the shape of expected advantage
-        padding_mask = padding_mask[:, :, :-1]
-        expected_advantage = expected_advantage * padding_mask
+    """Reshape the advantages from (batch_size, G, 1) to (batch_size * G, 1) 
+    before multiplying it with prob_ratios (batch_size * G, seq_length-1)"""
+    advantages = advantages.reshape(prob_ratios.shape[0], -1)
+    min_product = prob_ratios * advantages if mu == 1 else torch.min(prob_ratios * advantages, clipped_ratios * advantages)
+
+    expected_advantage = model_log_probs * min_product # (batch_size * G, seq_length-1), model_log_probs zero outs padding tokens 
 
     assert (
         min_product.shape[0] == model_log_probs.shape[0]
         and min_product.shape[1] == model_log_probs.shape[1]
     ), "Min product must have the same batch size and number of outputs as model log probs"
 
-    kl_div = kl_div_estimator(model_log_probs, ref_model_log_probs)
+    kl_div = kl_div_estimator(model_log_probs, ref_model_log_probs) # (batch_size * G, seq_length-1)
 
     logger.info(f"Mean KL Div: {torch.mean(kl_div).item()}")
     wandb.log({"Mean KL Div": torch.mean(kl_div).item()})
-    objective = expected_advantage - beta * kl_div
+
+    objective = expected_advantage - beta * kl_div 
     logger.info(f"Objective before mean: {objective}")
-    # Take mean across all tokens and all outputs
-    objective = torch.mean(objective, dim=[1, 2])
-    assert (
-        objective.shape[0] == model_log_probs.shape[0]
-    ), "Objective must have the same batch size as model log probs"
+
+    # Take mean across all tokens and all outputs, and batch
+    objective = torch.mean(objective)
+
     return objective
 
 
@@ -427,22 +442,26 @@ def evaluate_policy(
     test_batch: Dict,
     max_new_tokens: int = MAX_NEW_TOKENS,
     temperature: float = TEMPERATURE,
-):
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Evaluate the policy model on a test batch.
+
     Args:
-        policy_model: The current policy model.
-        tokenizer: The tokenizer for the policy model.
-        reward_model: The reward model.
-        test_batch: Batch of queries, should be of shape (batch_size).
-        max_new_tokens: The maximum number of new tokens to generate.
-        temperature: The temperature for sampling.
+        policy_model: The policy model to evaluate.
+        tokenizer: Tokenizer for the policy model.
+        reward_model: Function that computes rewards for generated responses.
+        test_batch: Dictionary containing test queries, should have shape (batch_size).
+        max_new_tokens: Maximum number of new tokens to generate per response.
+        temperature: Temperature parameter for sampling.
+
     Returns:
-        Generated text, a list of strings of shape (batch_size).
+        Tuple[torch.Tensor, torch.Tensor]: A tuple containing:
+            - rewards: Tensor of shape (batch_size,) containing rewards for each generated response
+            - accuracies: Tensor of shape (batch_size,) containing accuracy scores for each response
     """
     policy_model.eval()
     with torch.no_grad():
-        _, outputs = sample_outputs(
+        model_outputs = sample_outputs(
             policy_model,
             tokenizer,
             test_batch["prompt"],
@@ -450,11 +469,12 @@ def evaluate_policy(
             max_new_tokens=max_new_tokens,
             temperature=temperature,
         )
-        logger.debug(f"Evaluate Outputs: {outputs}")
+        all_responses = model_outputs["all_responses"]
+        logger.debug(f"Evaluate Outputs: {all_responses}")
 
     clear_cache()
 
     # Compute rewards and accuracies for each output
-    rewards, accuracies = reward_model(outputs, test_batch)
+    rewards, accuracies = reward_model(all_responses, test_batch)
 
     return rewards, accuracies

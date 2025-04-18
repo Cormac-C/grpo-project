@@ -160,7 +160,6 @@ def main():
         torch_dtype=POLICY_MODEL_PRECISION,
     )
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
     model.to(device)
     logger.info("Policy Model loaded successfully.")
