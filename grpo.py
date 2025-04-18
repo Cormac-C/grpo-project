@@ -470,11 +470,12 @@ def evaluate_policy(
             max_new_tokens=max_new_tokens,
             temperature=temperature,
         )
-        logger.debug(f"Evaluate Outputs: {model_outputs['all_responses']}")
+        all_responses = model_outputs["all_responses"]
+        logger.debug(f"Evaluate Outputs: {all_responses}")
 
     clear_cache()
 
     # Compute rewards and accuracies for each output
-    rewards, accuracies = reward_model(model_outputs['all_responses'], test_batch)
+    rewards, accuracies = reward_model(all_responses, test_batch)
 
     return rewards, accuracies
