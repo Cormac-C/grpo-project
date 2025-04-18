@@ -60,7 +60,7 @@ def grpo_iteration(
         temperature,
     )
 
-    all_responses = model_outputs["all_responses_reshaped"]
+    all_responses = model_outputs["all_responses"]
 
     padding_mask = (model_outputs["labels"] != IGNORE_INDEX).float()
     logger.info(f"Padding mask shape: {padding_mask.shape}")
