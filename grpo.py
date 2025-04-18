@@ -11,7 +11,7 @@ import gc
 SampleDict = Dict[str, Union[torch.Tensor, List[List[str]]]]
 
 # Global constants
-MAX_NEW_TOKENS = 1024
+MAX_NEW_TOKENS = 768
 TEMPERATURE = 1.0
 STABILITY_CONST = 1e-4
 GRAD_CLIPPING_NORM = 10.0
@@ -66,6 +66,7 @@ def grpo_iteration(
     )
 
     all_responses = model_outputs["all_responses"]
+    print(model_outputs["complete_sequences_ids"].shape)
 
     clear_cache()
 
@@ -110,6 +111,8 @@ def grpo_iteration(
         # Swap back the models
         reference_model.to("cpu")
         policy_model.to(gpu_device)
+
+    clear_cache()
 
     policy_model.train()
     for i in range(mu):
@@ -430,7 +433,9 @@ def calculate_grpo_objective(
     logger.info(f"Objective before mean: {objective}")
 
     # Take mean across all tokens and all outputs, and batch
-    objective = torch.mean(objective)
+    batch_size_and_G = objective.shape[0]
+    response_length  = torch.count_nonzero(model_log_probs).item()
+    objective = torch.sum(objective)/(batch_size_and_G * response_length)
 
     return objective
 
