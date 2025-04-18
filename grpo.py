@@ -4,16 +4,18 @@ import torch.nn.functional as F
 from torch.nn.utils import clip_grad_norm_
 import logging
 from transformers import GenerationConfig, PreTrainedModel, PreTrainedTokenizerBase
-from typing import Callable, Dict, List, Union
+from typing import Callable, Dict, List, Union, Tuple
 import gc
 
+# Type aliases
 SampleDict = Dict[str, Union[torch.Tensor, List[List[str]]]]
+
+# Global constants
 MAX_NEW_TOKENS = 1024
 TEMPERATURE = 1.0
 STABILITY_CONST = 1e-4
 GRAD_CLIPPING_NORM = 10.0
 IGNORE_INDEX = -100
-
 LOWER_PRECISION = torch.bfloat16
 
 logger = logging.getLogger(__name__)
@@ -37,19 +39,21 @@ def grpo_iteration(
     Perform one iteration of the GRPO algorithm.
 
     Args:
-        query_batch_prompts: Batch of queries.
-        query_batch_raw: Raw batch of inputs and targets for queries.
-        policy_model: The current policy model.
-        reward_model: The reward model.
-        tokenizer: The tokenizer for the policy model.
-        optimizer: The optimizer for the policy model.
-        G: The number of outputs to sample.
-        eps: The clipping width in GRPO objective.
-        beta: The influence of KL div term.
-        mu: The number of policy updates per iteration.
+        query_batch: Dictionary containing the batch of queries and their metadata.
+        policy_model: The current policy model to be optimized.
+        reference_model: The reference model used for KL divergence computation.
+        reward_model: Function that computes rewards for generated responses.
+        tokenizer: Tokenizer for the policy model.
+        optimizer: Optimizer for updating the policy model.
+        G: Number of outputs to sample per query.
+        eps: Clipping width for the GRPO objective.
+        beta: Coefficient for the KL divergence term.
+        mu: Number of policy updates per iteration.
+        max_new_tokens: Maximum number of new tokens to generate per response.
+        temperature: Temperature parameter for sampling.
 
     Returns:
-        The updated policy.
+        PreTrainedModel: The updated policy model after one iteration of GRPO.
     """
     # Sample G outputs from the policy for each query in query_batch
     model_outputs = sample_outputs(
@@ -150,6 +154,15 @@ def grpo_iteration(
 
 
 def find_grad_norm(model: PreTrainedModel) -> float:
+    """
+    Calculate the L2 norm of the gradients of a model.
+
+    Args:
+        model: The model whose gradient norm is to be computed.
+
+    Returns:
+        float: The L2 norm of the model's gradients.
+    """
     norm = torch.norm(
         torch.stack(
             [
@@ -164,6 +177,9 @@ def find_grad_norm(model: PreTrainedModel) -> float:
 
 
 def clear_cache():
+    """
+    Clear GPU cache and perform garbage collection to free up memory.
+    """
     gc.collect()
     torch.cuda.empty_cache()
 
@@ -180,18 +196,20 @@ def sample_outputs(
     Sample G outputs from the policy for each query in query_batch. Doesn't track gradients or log probs.
 
     Args:
-        policy: The current policy.
-        tokenizer: The tokenizer for the policy model.
-        query_batch: Batch of queries, a list of strings of length batch_size.
-        G: The number of outputs to sample.
-        max_new_tokens: Maximum number of new tokens to generate.
-        temperature: Temperature for sampling.
+        policy: The policy model to generate from.
+        tokenizer: Tokenizer for the policy model.
+        query_batch: List of query strings.
+        G: Number of outputs to sample per query.
+        max_new_tokens: Maximum number of new tokens to generate per response.
+        temperature: Temperature parameter for sampling.
 
-    Returns:        
-        labels: A tensor of shape (batch_size*G,  max_length) with token ids for the model responses, -100 on query/input and padding tokens
-        all_responses: A list of lists of strings of shape (batch_size, G) containing the generated text.
-        complete_sequences_ids: A tensor of shape (batch_size*G, max_length) containing the complete sequences (including input)
-        attention_mask: Attention Mask over the complete sequence, ignoring padding (batch_size*G, max_length)
+    Returns:
+        SampleDict: Dictionary containing:
+            - labels: Tensor of shape (batch_size*G, max_length) with token IDs for responses,
+                     using IGNORE_INDEX for query and padding tokens
+            - all_responses: List of lists of strings of shape (batch_size, G) containing generated text
+            - complete_sequences_ids: Tensor of shape (batch_size*G, max_length) with complete sequences
+            - attention_mask: Attention mask tensor of shape (batch_size*G, max_length)
     """
     gen_config = GenerationConfig(
         max_new_tokens=max_new_tokens,
@@ -244,11 +262,13 @@ def sample_outputs(
 
 def calculate_grpo_advantage(rewards: torch.Tensor) -> torch.Tensor:
     """
-    Calculate advantage for each output.
+    Calculate the advantage for each generated output.
+
     Args:
-        rewards: The rewards for each output, have shape (batch_size, G).
+        rewards: Tensor of shape (batch_size, G) containing rewards for each output.
+
     Returns:
-        A tensor of advantages for each output, shape (batch_size, G).
+        torch.Tensor: Advantage values for each output, same shape as input rewards.
     """
 
     means = torch.mean(rewards, dim=1, keepdim=True)
@@ -332,6 +352,7 @@ def kl_div_estimator(
     Args:
         model_log_probs: Log probabilities from the model.
         ref_model_log_probs: Log probabilities from the reference model.
+
     Returns:
         A tensor of KL divergence values. Calculated with unbiased estimator from http://joschu.net/blog/kl-approx.html (cited in GRPO paper)
     """
@@ -361,7 +382,7 @@ def calculate_grpo_objective(
         eps: The clipping width in GRPO objective.
         beta: The influence of KL div term.
     Returns:
-        The GRPO objective value, of shape (batch_size).
+        torch.Tensor: The GRPO objective value, of shape (batch_size).
     """
     # If mu=1, just set prob_ratios to 1
     logger.info(f"Model log probs: {model_log_probs}")
@@ -411,18 +432,22 @@ def evaluate_policy(
     test_batch: Dict,
     max_new_tokens: int = MAX_NEW_TOKENS,
     temperature: float = TEMPERATURE,
-):
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Evaluate the policy model on a test batch.
+
     Args:
-        policy_model: The current policy model.
-        tokenizer: The tokenizer for the policy model.
-        reward_model: The reward model.
-        test_batch: Batch of queries, should be of shape (batch_size).
-        max_new_tokens: The maximum number of new tokens to generate.
-        temperature: The temperature for sampling.
+        policy_model: The policy model to evaluate.
+        tokenizer: Tokenizer for the policy model.
+        reward_model: Function that computes rewards for generated responses.
+        test_batch: Dictionary containing test queries, should have shape (batch_size).
+        max_new_tokens: Maximum number of new tokens to generate per response.
+        temperature: Temperature parameter for sampling.
+
     Returns:
-        Generated text, a list of strings of shape (batch_size).
+        Tuple[torch.Tensor, torch.Tensor]: A tuple containing:
+            - rewards: Tensor of shape (batch_size,) containing rewards for each generated response
+            - accuracies: Tensor of shape (batch_size,) containing accuracy scores for each response
     """
     policy_model.eval()
     with torch.no_grad():
