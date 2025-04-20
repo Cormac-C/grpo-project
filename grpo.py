@@ -11,7 +11,7 @@ import gc
 SampleDict = Dict[str, Union[torch.Tensor, List[List[str]]]]
 
 # Global constants
-MAX_NEW_TOKENS = 1024
+MAX_NEW_TOKENS = 768
 TEMPERATURE = 1.0
 STABILITY_CONST = 1e-4
 GRAD_CLIPPING_NORM = 10.0
