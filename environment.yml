@@ -83,7 +83,7 @@ dependencies:
   - libcblas=3.9.0
   - libcrc32c=1.1.2
   - libcurl=8.13.0
-  - libcxx=20.1.2
+#  - libcxx=20.1.2
   - libedit=3.1.20250104
   - libev=4.33
   - libevent=2.1.12
