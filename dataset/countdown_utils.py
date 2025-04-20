@@ -235,38 +235,32 @@ def batch_compute_metrics(
             - total_rewards: Sum of format and equation rewards
             - accuracies: Binary indicators of correctness
     """
-    format_rewards = []
-    equation_rewards = []
-    total_rewards = []
-    accuracies = []
-    # Numbers is a list of tensors each of shape (batchsize), combine them into a single tensor
+    batch_size = len(outputs)
+    G = len(outputs[0]) if batch_size > 0 else 0
+    
+    # Pre-allocate tensors for results
+    format_rewards = torch.zeros((batch_size, G), dtype=torch.float32)
+    equation_rewards = torch.zeros((batch_size, G), dtype=torch.float32)
+    total_rewards = torch.zeros((batch_size, G), dtype=torch.float32)
+    accuracies = torch.zeros((batch_size, G), dtype=torch.float32)
+    
+    # Get numbers tensor once
     numbers_tensor = queries["numbers"]
-
-    for i, output_group in enumerate(outputs):
-        group_format_rewards = []
-        group_equation_rewards = []
-        group_total_rewards = []
-        group_accuracies = []
-
+    targets = queries["target"]
+    
+    # Process each batch item
+    for i in range(batch_size):
         query = {
             "numbers": numbers_tensor[i].tolist(),
-            "target": queries["target"][i],
+            "target": targets[i].item(),
         }
-        # TODO: Could revisit for a more efficient implementation
-        for output in output_group:
+        
+        # Process each output in the group
+        for j, output in enumerate(outputs[i]):
             metrics = compute_metrics(output, query, format_score, equation_score)
-            group_format_rewards.append(metrics["format_reward"])
-            group_equation_rewards.append(metrics["equation_reward"])
-            group_total_rewards.append(metrics["reward_score"])
-            group_accuracies.append(metrics["accuracy"])
-
-        format_rewards.append(group_format_rewards)
-        equation_rewards.append(group_equation_rewards)
-        total_rewards.append(group_total_rewards)
-        accuracies.append(group_accuracies)
-    # Convert to tensors
-    format_rewards_tensor = torch.tensor(format_rewards, dtype=torch.float32)
-    equation_rewards_tensor = torch.tensor(equation_rewards, dtype=torch.float32)
-    total_rewards_tensor = torch.tensor(total_rewards, dtype=torch.float32)
-    accuracies_tensor = torch.tensor(accuracies, dtype=torch.float32)
-    return format_rewards_tensor, equation_rewards_tensor, total_rewards_tensor, accuracies_tensor
+            format_rewards[i, j] = metrics["format_reward"]
+            equation_rewards[i, j] = metrics["equation_reward"]
+            total_rewards[i, j] = metrics["total_reward"]
+            accuracies[i, j] = metrics["accuracy"]
+    
+    return format_rewards, equation_rewards, total_rewards, accuracies
