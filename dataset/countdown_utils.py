@@ -159,19 +159,35 @@ def evaluate_equation(equation_str: str) -> Optional[float]:
 
 
 def compute_metrics(
-    output: str, query: Dict, format_score: float = 0.1, full_score: float = 1.0
+    output: str, query: Dict, format_score: float = 0.5, equation_score: float = 1.0
 ) -> Dict[str, float]:
     """
-    Compute two metrics for the countdown solution:
-    1) 'reward_score': partial or full points
-    2) 'accuracy': 0.0 or 1.0 indicating correctness
+    Compute four metrics for the countdown solution:
+    1) 'format_reward': reward for correct format
+    2) 'equation_reward': reward for correct equation
+    3) 'total_reward': sum of format_reward and equation_reward
+    4) 'accuracy': 0.0 or 1.0 indicating correctness
+
+    Args:
+        output: The model's generated response string.
+        query: Dictionary containing:
+            - 'target': The target number to reach
+            - 'numbers': List of available numbers to use
+        format_score: Reward given for correct format but incorrect equation (default: 0.5)
+        equation_score: Reward given for correct equation (default: 1.0)
 
     Returns:
-        A dict with {'reward_score': float, 'accuracy': float}.
+        Dict[str, float]: Dictionary containing:
+            - 'format_reward': float (0.0 or format_score)
+            - 'equation_reward': float (0.0 or equation_score)
+            - 'total_reward': float (sum of format_reward and equation_reward)
+            - 'accuracy': float (0.0 or 1.0)
     """
 
     # Default values
-    reward_score = 0.0
+    total_reward = 0.0
+    format_reward = 0.0
+    equation_reward = 0.0
     accuracy = 0.0
 
     target = query["target"]
@@ -179,56 +195,57 @@ def compute_metrics(
 
     equation = extract_solution(output)
 
-
     logger.info(f"Extracted Equation: {equation} | Numbers: {numbers} | Target: {target}")
 
     if equation is not None:
+        format_reward = format_score
         if validate_equation(equation, numbers):
             result = evaluate_equation(equation)
-            if result is not None:
-                if abs(result - target) < EVAL_MARGIN:
-                    # Correct numeric result
-                    reward_score = full_score
-                    accuracy = 1.0
-                else:
-                    # Numeric result but not correct
-                    reward_score = format_score
-            else:
-                # Could not evaluate
-                reward_score = format_score
-        else:
-            # Equation doesn't match the numbers exactly
-            reward_score = format_score
+            if result is not None and abs(result - target) < EVAL_MARGIN:
+                equation_reward = equation_score
+                accuracy = 1.0
 
+    total_reward = format_reward + equation_reward
     # Finally, return the updated dictionary
-    return {"reward_score": reward_score, "accuracy": accuracy}
+    return {"format_reward": format_reward, "equation_reward": equation_reward, "total_reward": total_reward, "accuracy": accuracy}
 
 
 def batch_compute_metrics(
     outputs: List[List[str]],
     queries: Dict,
-    format_score: float = 0.1,
-    full_score: float = 1.0,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+    format_score: float = 0.5,
+    equation_score: float = 1.0,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Batch process the outputs and queries to compute rewards and accuracies.
 
     Args:
-        outputs: List of lists of model outputs, should be of shape (batch_size, G).
-        queries: List of query dictionaries, should be of length batch_size.
-        format_score: Score for partial (format) correctness.
-        full_score: Score for full correctness.
+        outputs: List of lists of model outputs, shape (batch_size, G)
+            where G is the number of samples per query
+        queries: Dictionary containing:
+            - 'target': Tensor of target numbers, shape (batch_size,)
+            - 'numbers': List of tensors of available numbers, each shape (batch_size,)
+        format_score: Reward for correct format but incorrect equation (default: 0.5)
+        equation_score: Reward for correct equation (default: 1.0)
 
     Returns:
-        A tensor for rewards and accuracies, each should be of shape (batch_size, G).
+        Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]: Four tensors of shape (batch_size, G):
+            - format_rewards: Rewards for correct format
+            - equation_rewards: Rewards for correct equations
+            - total_rewards: Sum of format and equation rewards
+            - accuracies: Binary indicators of correctness
     """
-    rewards = []
+    format_rewards = []
+    equation_rewards = []
+    total_rewards = []
     accuracies = []
     # Numbers is a list of tensors each of shape (batchsize), combine them into a single tensor
     numbers_tensor = queries["numbers"]
 
     for i, output_group in enumerate(outputs):
-        group_rewards = []
+        group_format_rewards = []
+        group_equation_rewards = []
+        group_total_rewards = []
         group_accuracies = []
 
         query = {
@@ -237,13 +254,19 @@ def batch_compute_metrics(
         }
         # TODO: Could revisit for a more efficient implementation
         for output in output_group:
-            metrics = compute_metrics(output, query, format_score, full_score)
-            group_rewards.append(metrics["reward_score"])
+            metrics = compute_metrics(output, query, format_score, equation_score)
+            group_format_rewards.append(metrics["format_reward"])
+            group_equation_rewards.append(metrics["equation_reward"])
+            group_total_rewards.append(metrics["reward_score"])
             group_accuracies.append(metrics["accuracy"])
 
-        rewards.append(group_rewards)
+        format_rewards.append(group_format_rewards)
+        equation_rewards.append(group_equation_rewards)
+        total_rewards.append(group_total_rewards)
         accuracies.append(group_accuracies)
     # Convert to tensors
-    rewards_tensor = torch.tensor(rewards, dtype=torch.float32)
+    format_rewards_tensor = torch.tensor(format_rewards, dtype=torch.float32)
+    equation_rewards_tensor = torch.tensor(equation_rewards, dtype=torch.float32)
+    total_rewards_tensor = torch.tensor(total_rewards, dtype=torch.float32)
     accuracies_tensor = torch.tensor(accuracies, dtype=torch.float32)
-    return rewards_tensor, accuracies_tensor
+    return format_rewards_tensor, equation_rewards_tensor, total_rewards_tensor, accuracies_tensor

@@ -71,18 +71,22 @@ def grpo_iteration(
     clear_cache()
 
     # Compute rewards and accuracies for each output
-    rewards, accuracies = reward_model(all_responses, query_batch)
-    logger.info(f"Average Reward: {rewards.mean()}")
+    format_rewards, equation_rewards, total_rewards, accuracies = reward_model(all_responses, query_batch)
+    logger.info(f"Average Format Reward: {format_rewards.mean()}")
+    logger.info(f"Average Equation Reward: {equation_rewards.mean()}")
+    logger.info(f"Average Total Reward: {total_rewards.mean()}")
     logger.info(f"Average Accuracy: {accuracies.mean()}")
     wandb.log(
         {
-            "train_mean_reward": rewards.mean().item(),
+            "train_mean_format_reward": format_rewards.mean().item(),
+            "train_mean_equation_reward": equation_rewards.mean().item(),
+            "train_mean_total_reward": total_rewards.mean().item(),
             "train_mean_accuracy": accuracies.mean().item(),
         }
     )
 
     # Compute token-level advantage for each token in each output
-    advantages = calculate_grpo_advantage(rewards)
+    advantages = calculate_grpo_advantage(total_rewards)
     logger.info(f"Advantages: {advantages}")
 
     #  Compute log probabilities for reference model and pre-update policy, no gradients here
@@ -447,7 +451,7 @@ def evaluate_policy(
     test_batch: Dict,
     max_new_tokens: int = MAX_NEW_TOKENS,
     temperature: float = TEMPERATURE,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Evaluate the policy model on a test batch.
 
@@ -460,9 +464,11 @@ def evaluate_policy(
         temperature: Temperature parameter for sampling.
 
     Returns:
-        Tuple[torch.Tensor, torch.Tensor]: A tuple containing:
-            - rewards: Tensor of shape (batch_size,) containing rewards for each generated response
-            - accuracies: Tensor of shape (batch_size,) containing accuracy scores for each response
+        Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]: Four tensors:
+            - format_rewards: Rewards for correct format
+            - equation_rewards: Rewards for correct equations
+            - total_rewards: Sum of format and equation rewards
+            - accuracies: Binary indicators of correctness
     """
     policy_model.eval()
     with torch.no_grad():
@@ -480,6 +486,6 @@ def evaluate_policy(
     clear_cache()
 
     # Compute rewards and accuracies for each output
-    rewards, accuracies = reward_model(all_responses, test_batch)
+    format_rewards, equation_rewards, total_rewards, accuracies = reward_model(all_responses, test_batch)
 
-    return rewards, accuracies
+    return format_rewards, equation_rewards, total_rewards, accuracies

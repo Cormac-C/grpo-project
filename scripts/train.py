@@ -209,26 +209,34 @@ def main():
             if batch_iter % EVALUATION_FREQUENCY == 0:
                 logger.info("Batch %d/%d completed.", batch_iter, len(train_dataloader))
                 logger.info("Evaluating model...")
-                full_rewards, full_accuracies = [], []
+                full_format_rewards, full_equation_rewards, full_total_rewards, full_accuracies = [], [], [], []
                 for test_batch in tqdm(test_dataloader, desc="Evaluating"):
-                    rewards, accuracies = evaluate_policy(
+                    format_rewards, equation_rewards, total_rewards, accuracies = evaluate_policy(
                         policy_model=model,
                         tokenizer=tokenizer,
                         reward_model=batch_compute_metrics,
                         test_batch=test_batch,
                     )
-                    full_rewards.append(rewards)
+                    full_format_rewards.append(format_rewards)
+                    full_equation_rewards.append(equation_rewards)
+                    full_total_rewards.append(total_rewards)
                     full_accuracies.append(accuracies)
-                full_rewards = torch.cat(full_rewards)
+                full_format_rewards = torch.cat(full_format_rewards)
+                full_equation_rewards = torch.cat(full_equation_rewards)
+                full_total_rewards = torch.cat(full_total_rewards)
                 full_accuracies = torch.cat(full_accuracies)
                 logger.info("Evaluation completed.")
-                logger.info("Mean reward: %f", full_rewards.mean().item())
+                logger.info("Mean format reward: %f", full_format_rewards.mean().item())
+                logger.info("Mean equation reward: %f", full_equation_rewards.mean().item())
+                logger.info("Mean total reward: %f", full_total_rewards.mean().item())
                 logger.info("Mean accuracy: %f", full_accuracies.mean().item())
                 wandb.log(
                     {
                         "epoch": epoch + 1,
                         "batch": batch_iter,
-                        "test_mean_reward": full_rewards.mean().item(),
+                        "test_mean_format_reward": full_format_rewards.mean().item(),
+                        "test_mean_equation_reward": full_equation_rewards.mean().item(),
+                        "test_mean_total_reward": full_total_rewards.mean().item(),
                         "test_mean_accuracy": full_accuracies.mean().item(),
                     }
                 )
