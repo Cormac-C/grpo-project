@@ -157,7 +157,7 @@ def evaluate_equation(equation_str: str) -> Optional[float]:
 
 
 def compute_metrics(
-    output: str, query: Dict, format_score: float = 0.5, equation_score: float = 1.0
+    output: str, query: Dict, format_score: float = 0.5, equation_score: float = 3.0
 ) -> Dict[str, float]:
     """
     Compute four metrics for the countdown solution:
@@ -172,7 +172,7 @@ def compute_metrics(
             - 'target': The target number to reach
             - 'numbers': List of available numbers to use
         format_score: Reward given for correct format but incorrect equation (default: 0.5)
-        equation_score: Reward given for correct equation (default: 1.0)
+        equation_score: Reward given for correct equation (default: 3.0)
 
     Returns:
         Dict[str, float]: Dictionary containing:
@@ -212,7 +212,7 @@ def batch_compute_metrics(
     outputs: List[List[str]],
     queries: Dict,
     format_score: float = 0.5,
-    equation_score: float = 1.0,
+    equation_score: float = 3.0,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Batch process the outputs and queries to compute rewards and accuracies.
@@ -224,7 +224,7 @@ def batch_compute_metrics(
             - 'target': Tensor of target numbers, shape (batch_size,)
             - 'numbers': List of tensors of available numbers, each shape (batch_size,)
         format_score: Reward for correct format but incorrect equation (default: 0.5)
-        equation_score: Reward for correct equation (default: 1.0)
+        equation_score: Reward for correct equation (default: 3.0)
 
     Returns:
         Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]: Four tensors of shape (batch_size, G):
