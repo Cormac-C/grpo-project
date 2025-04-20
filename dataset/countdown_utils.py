@@ -101,26 +101,24 @@ def gen_dataset(
 def extract_solution(solution_str: str) -> Optional[str]:
     """
     Extract the final arithmetic equation from the model output.
-    This code closely follows the implementation in TinyZero.
-    https://github.com/Jiayi-Pan/TinyZero/blob/0349609d618d477ed3a9834d56952c7647a50c2d/verl/utils/reward_score/countdown.py#L7
     """
-    # Remove everything before the first "Assistant:"
-    if "Assistant:" in solution_str:
-        solution_str = solution_str.split("Assistant:", 1)[1]
-    elif "<|im_start|>assistant" in solution_str:
-        solution_str = solution_str.split("<|im_start|>assistant", 1)[1]
-    else:
-        return None
-    solution_str = solution_str.split('\n')[-1]
+    eq_pattern = r"([0-9+\-*/\(\)\s]+=[0-9+\-*/\(\)\s]+)"
 
-    answer_pattern = r"<answer>(.*?)</answer>"
-    match = re.finditer(answer_pattern, solution_str)
-    matches = list(match)
-    if matches:
-        final_answer = matches[-1].group(1).strip()
-    else:
-        final_answer = None
-    return final_answer
+    # Find all possible equations
+    matches = re.findall(eq_pattern, solution_str)
+    if not matches:
+        return None
+
+    # Take the last matched equation (in case there's more than one)
+    equation = matches[-1].strip()
+
+    equation = re.sub(r"\\boxed\{(.*?)\}", r"\1", equation)  # remove \boxed{ }
+    equation = re.sub(r"[\[\]]", "", equation)  # remove [ and ]
+
+    # strip newlines or extra spaces
+    equation = " ".join(equation.split())
+
+    return equation if equation else None
 
 
 def validate_equation(equation_str: str, available_numbers: List[int]) -> bool:
