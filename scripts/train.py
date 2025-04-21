@@ -240,6 +240,7 @@ def main():
                     optimizer.zero_grad()
                     step_count += 1
                     logger.info("Step %d completed.", step_count)
+                    logger.info("Train loss: %f", total_loss / grad_accum_steps)
                     wandb.log({"train_loss": total_loss / grad_accum_steps, "step": step_count})
                     total_loss = 0
                 
