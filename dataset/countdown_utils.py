@@ -123,8 +123,7 @@ def validate_equation_contains_numbers(
     equation_str: str, available_numbers: List[int]
 ) -> bool:
     """
-    Ensures that the left side of the equation (before '=') uses exactly
-    the numbers in `available_numbers`
+    Ensures that the equation uses each of the numbers in `available_numbers` once
     """
     available_numbers = [
         num for num in available_numbers if num > 0
