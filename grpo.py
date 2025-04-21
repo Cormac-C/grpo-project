@@ -32,6 +32,7 @@ def grpo_iteration(
     eps: float,
     beta: float,
     mu: int,
+    accumulate: bool = False,
     max_new_tokens: int = MAX_NEW_TOKENS,
     temperature: float = TEMPERATURE,
 ) -> PreTrainedModel:
@@ -119,6 +120,7 @@ def grpo_iteration(
     clear_cache()
 
     policy_model.train()
+    total_loss = 0
     for i in range(mu):
         logger.info(f"Update iteration: {i+1}/{mu}")
         optimizer.zero_grad()
@@ -143,8 +145,6 @@ def grpo_iteration(
 
         # Compute gradient of the GRPO objective
         loss = -objective
-        logger.info(f"Loss: {loss.item()}")
-        wandb.log({"train_loss": loss.item()})
         loss.backward()
 
         grad_norm = find_grad_norm(policy_model)
@@ -157,10 +157,14 @@ def grpo_iteration(
         logger.info(f"Gradient norm (clipping): {grad_norm}")
         wandb.log({"train_grad_norm_w_clip": grad_norm})
 
-        # Update the policy
-        optimizer.step()
+        # Update the policy if not accumulating
+        if not accumulate:
+            optimizer.step()
+        
+        total_loss += loss.item()
+
     clear_cache()
-    return policy_model
+    return total_loss / mu
 
 
 def find_grad_norm(model: PreTrainedModel) -> float:

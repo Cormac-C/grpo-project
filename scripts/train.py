@@ -18,7 +18,7 @@ if module_path not in sys.path:
     sys.path.append(module_path)
 
 # Importing the necessary modules
-from grpo import grpo_iteration, evaluate_policy
+from grpo import grpo_iteration, evaluate_policy, GRAD_CLIPPING_NORM
 from dataset.countdown_utils import batch_compute_metrics
 from dataset.countdown_dataloader import *
 
@@ -59,25 +59,42 @@ def parse_args():
         "--num-epochs", type=int, default=1, help="The number of epochs to train for."
     )
     parser.add_argument(
-        "--batch-size", type=int, default=8, help="The batch size to use for training."
+        "--batch-size", type=int, default=8, help="Logical batch size for training (prompts)."
+    )
+    parser.add_argument(
+        "--micro-batch-size", type=int, default=2, help="Prompts per forward/backward pass."
+    )
+    parser.add_argument(
+        "--grad-accum-steps", type=int, default=4, help="Micro batches to accumulate before optimiser step."
     )
     parser.add_argument(
         "--learning-rate",
         type=float,
-        default=1e-5,
+        default=1e-6,
         help="The learning rate to use for training.",
     )
     parser.add_argument(
-        "--num-outputs", type=int, default=5, help="The number of outputs to generate."
+        "--num-outputs", type=int, default=4, help="The number of outputs to generate."
     )
     parser.add_argument(
         "--epsilon", type=float, default=0.1, help="Epsilon value for the training."
     )
     parser.add_argument(
-        "--beta", type=float, default=0.05, help="Beta value for the training."
+        "--beta", type=float, default=0.001, help="Beta value for the training."
     )
     parser.add_argument("--mu", type=int, default=1, help="Mu value for the training.")
     return parser.parse_args()
+
+# ---------- helper to slice a dict‑batch ---------------------------------- #
+def slice_batch(batch: Dict, start: int, end: int) -> Dict:
+    """Return a shallow copy of *batch* containing rows start:end."""
+    out = {}
+    for k, v in batch.items():
+        if isinstance(v, list):
+            out[k] = v[start:end]
+        else:  # torch tensor
+            out[k] = v[start:end]
+    return out
 
 
 def main():
@@ -155,13 +172,13 @@ def main():
 
     # Load the model and send to GPUs
     logger.info("Loading policy model: %s", model_name)
-    model = AutoModelForCausalLM.from_pretrained(
+    policy_model = AutoModelForCausalLM.from_pretrained(
         model_name,
         torch_dtype=POLICY_MODEL_PRECISION,
     )
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     tokenizer.padding_side = "left"
-    model.to(device)
+    policy_model.to(device)
     logger.info("Policy Model loaded successfully.")
     logger.info("Loading reference model: %s", model_name)
     reference_model = AutoModelForCausalLM.from_pretrained(
@@ -174,7 +191,7 @@ def main():
 
     # Set up the optimizer
     learning_rate = args.learning_rate
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+    optimizer = torch.optim.AdamW(policy_model.parameters(), lr=learning_rate)
     logger.info("Optimizer set up with learning rate: %f", learning_rate)
 
     # Load needed arguments
@@ -182,7 +199,10 @@ def main():
     eps = args.epsilon
     beta = args.beta
     mu = args.mu
-    logger.info("Loaded arguments: G=%d, eps=%f, beta=%f, mu=%d", G, eps, beta, mu)
+    micro_batch_size = args.micro_batch_size
+    grad_accum_steps = args.grad_accum_steps
+    step_count = 0
+    logger.info("Loaded arguments: G=%d, eps=%f, beta=%f, mu=%d, micro_batch_size=%d, grad_accum_steps=%d", G, eps, beta, mu, micro_batch_size, grad_accum_steps)
 
     # TODO: Revisit is it worth wrapping this in a trainer class: https://huggingface.co/docs/transformers/en/main_classes/trainer
 
@@ -190,56 +210,76 @@ def main():
     logger.info("Starting training...")
     for epoch in range(args.num_epochs):
         logger.info("Epoch %d/%d", epoch + 1, args.num_epochs)
-        model.train()
-        batch_iter = 0
-        for batch in tqdm(train_dataloader, desc="Training"):
-            batch_iter += 1
-            model = grpo_iteration(
-                query_batch=batch,
-                policy_model=model,
-                reference_model=reference_model,
-                reward_model=batch_compute_metrics,
-                tokenizer=tokenizer,
-                optimizer=optimizer,
-                G=G,
-                eps=eps,
-                beta=beta,
-                mu=mu,
-            )
-            if batch_iter % EVALUATION_FREQUENCY == 0:
-                logger.info("Batch %d/%d completed.", batch_iter, len(train_dataloader))
-                logger.info("Evaluating model...")
-                full_format_rewards, full_equation_rewards, full_total_rewards, full_accuracies = [], [], [], []
-                for test_batch in tqdm(test_dataloader, desc="Evaluating"):
-                    format_rewards, equation_rewards, total_rewards, accuracies = evaluate_policy(
-                        policy_model=model,
-                        tokenizer=tokenizer,
-                        reward_model=batch_compute_metrics,
-                        test_batch=test_batch,
-                    )
-                    full_format_rewards.append(format_rewards)
-                    full_equation_rewards.append(equation_rewards)
-                    full_total_rewards.append(total_rewards)
-                    full_accuracies.append(accuracies)
-                full_format_rewards = torch.cat(full_format_rewards)
-                full_equation_rewards = torch.cat(full_equation_rewards)
-                full_total_rewards = torch.cat(full_total_rewards)
-                full_accuracies = torch.cat(full_accuracies)
-                logger.info("Evaluation completed.")
-                logger.info("Mean format reward: %f", full_format_rewards.mean().item())
-                logger.info("Mean equation reward: %f", full_equation_rewards.mean().item())
-                logger.info("Mean total reward: %f", full_total_rewards.mean().item())
-                logger.info("Mean accuracy: %f", full_accuracies.mean().item())
-                wandb.log(
-                    {
-                        "epoch": epoch + 1,
-                        "batch": batch_iter,
-                        "test_mean_format_reward": full_format_rewards.mean().item(),
-                        "test_mean_equation_reward": full_equation_rewards.mean().item(),
-                        "test_mean_total_reward": full_total_rewards.mean().item(),
-                        "test_mean_accuracy": full_accuracies.mean().item(),
-                    }
+        policy_model.train()
+        for big_batch in tqdm(train_dataloader, desc="Training"):
+            optimizer.zero_grad()
+            num_prompts = len(big_batch["prompt"])
+            total_loss = 0
+            for start in range(0, num_prompts, micro_batch_size):
+                end = min(start + micro_batch_size, num_prompts)
+                mini_batch = slice_batch(big_batch, start, end)
+                loss = grpo_iteration(
+                    query_batch=mini_batch,
+                    policy_model=policy_model,
+                    reference_model=reference_model,
+                    reward_model=batch_compute_metrics,
+                    tokenizer=tokenizer,
+                    optimizer=optimizer,
+                    G=G,
+                    eps=eps,
+                    beta=beta,
+                    mu=mu,
+                    accumulate=True,
                 )
+                (loss / grad_accum_steps).backward()
+                total_loss += loss.item()
+
+                if ((end // micro_batch_size) % grad_accum_steps == 0) or (end == num_prompts):
+                    torch.nn.utils.clip_grad_norm_(policy_model.parameters(), max_norm=GRAD_CLIPPING_NORM)
+                    optimizer.step()
+                    optimizer.zero_grad()
+                    step_count += 1
+                    logger.info("Step %d completed.", step_count)
+                    wandb.log({"train_loss": total_loss / grad_accum_steps, "step": step_count})
+                    total_loss = 0
+                
+                if step_count % EVALUATION_FREQUENCY == 0:
+                    logger.info("Batch %d/%d completed.", step_count, len(train_dataloader))
+                    logger.info("Evaluating model...")
+                    policy_model.eval()
+                    full_format_rewards, full_equation_rewards, full_total_rewards, full_accuracies = [], [], [], []
+                    with torch.no_grad():
+                        for test_batch in tqdm(test_dataloader, desc="Evaluating"):
+                            format_rewards, equation_rewards, total_rewards, accuracies = evaluate_policy(
+                                policy_model=policy_model,
+                                tokenizer=tokenizer,
+                                reward_model=batch_compute_metrics,
+                                test_batch=test_batch,
+                            )
+                            full_format_rewards.append(format_rewards)
+                            full_equation_rewards.append(equation_rewards)
+                            full_total_rewards.append(total_rewards)
+                            full_accuracies.append(accuracies)
+                        full_format_rewards = torch.cat(full_format_rewards)
+                        full_equation_rewards = torch.cat(full_equation_rewards)
+                        full_total_rewards = torch.cat(full_total_rewards)
+                        full_accuracies = torch.cat(full_accuracies)
+                        logger.info("Evaluation completed.")
+                        logger.info("Mean format reward: %f", full_format_rewards.mean().item())
+                        logger.info("Mean equation reward: %f", full_equation_rewards.mean().item())
+                        logger.info("Mean total reward: %f", full_total_rewards.mean().item())
+                        logger.info("Mean accuracy: %f", full_accuracies.mean().item())
+                        wandb.log(
+                            {
+                                "epoch": epoch + 1,
+                                "batch": step_count,
+                                "test_mean_format_reward": full_format_rewards.mean().item(),
+                                "test_mean_equation_reward": full_equation_rewards.mean().item(),
+                                "test_mean_total_reward": full_total_rewards.mean().item(),
+                                "test_mean_accuracy": full_accuracies.mean().item(),
+                            }
+                        )
+                    policy_model.train()
 
         logger.info("Epoch %d completed.", epoch + 1)
 
@@ -247,7 +287,7 @@ def main():
     output_dir = args.output_dir
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
-    model.save_pretrained(output_dir)
+    policy_model.save_pretrained(output_dir)
     logger.info("Model saved to: %s", output_dir)
     wandb.finish()
     logger.info("Training completed successfully.")
