@@ -100,58 +100,67 @@ def gen_dataset(
 # ---------------------- Evaluation Utils ----------------------
 def extract_solution(solution_str: str) -> Optional[str]:
     """
-    Extract the final arithmetic equation from the model output.
+    Extract the last expression in the solution between <answer> and </answer> tags.
     """
-    eq_pattern = r"([0-9+\-*/\(\)\s]+=[0-9+\-*/\(\)\s]+)"
-
-    # Find all possible equations
-    matches = re.findall(eq_pattern, solution_str)
+    answer_pattern = r"<answer>(.*?)</answer>"
+    matches = re.findall(answer_pattern, solution_str)
     if not matches:
         return None
-
-    # Take the last matched equation (in case there's more than one)
-    equation = matches[-1].strip()
-
-    equation = re.sub(r"\\boxed\{(.*?)\}", r"\1", equation)  # remove \boxed{ }
-    equation = re.sub(r"[\[\]]", "", equation)  # remove [ and ]
-
-    # strip newlines or extra spaces
-    equation = " ".join(equation.split())
-
-    return equation if equation else None
+    # If there are multiple sets of answer tags, take the last matched expression
+    expression = matches[-1].strip()
+    return expression if expression else None
 
 
-def validate_equation(equation_str: str, available_numbers: List[int]) -> bool:
+def validate_equation_pattern(equation_str: str) -> bool:
     """
-    Ensures that the left side of the equation (before '=') uses exactly
-    the numbers in `available_numbers`
+    Validates the equation string to ensure it contains only valid characters.
+    """
+    allowed_pattern = r"^[\d+\-*/().\s]+$"
+    return bool(re.match(allowed_pattern, equation_str))
+
+
+def validate_equation_contains_numbers(
+    equation_str: str, available_numbers: List[int]
+) -> bool:
+    """
+    Ensures that the equation uses each of the numbers in `available_numbers` once
     """
     available_numbers = [
         num for num in available_numbers if num > 0
     ]  # Filter out zero padding from collate function
     try:
-        # Split at the '=' to isolate the left side
-        if "=" not in equation_str:
-            return False
-
-        lhs, _ = equation_str.split("=", 1)  # split just once
-
-        # Extract the numbers from the left side
-        numbers_in_eq = [int(n) for n in re.findall(r"\d+", lhs)]
+        numbers_in_eq = [int(n) for n in re.findall(r"\d+", equation_str)]
 
         # Compare sorted lists
-        return sorted(numbers_in_eq) == sorted(available_numbers)
+        match = sorted(numbers_in_eq) == sorted(available_numbers)
+        return match
     except:
         return False
 
 
+def validate_equation_correct(
+    equation_str: str, numbers: list[int], target: int
+) -> bool:
+    """
+    Validates that the equation contains the right numbers and evaluates to the target.
+    """
+    if not validate_equation_contains_numbers(equation_str, numbers):
+        return False
+    # If we want to add a validation score for the right numbers we can break up this function
+
+    result = evaluate_equation(equation_str)
+
+    if result is None:
+        return False
+    return abs(result - target) <= EVAL_MARGIN
+
+
 def evaluate_equation(equation_str: str) -> Optional[float]:
     try:
-        lhs, _ = equation_str.split("=", 1)  # split just once
         allowed_pattern = r"^[\d+\-*/().\s]+$"
-        if not re.match(allowed_pattern, lhs):
+        if not re.match(allowed_pattern, equation_str):
             raise ValueError("Invalid characters in equation.")
-        return eval(lhs, {"__builtins__": None}, {})
+        return eval(equation_str, {"__builtins__": None}, {})
     except:
         return None
 
@@ -175,29 +184,50 @@ def compute_metrics(
     target = query["target"]
     numbers = query["numbers"]
 
+    # equation = extract_solution(output)
     equation = extract_solution(output)
 
-    logger.info(f"Extracted Equation: {equation} | Numbers: {numbers} | Target: {target}")
+    logger.info(
+        f"Extracted Equation: {equation} | Numbers: {numbers} | Target: {target}"
+    )
 
     if equation is not None:
-        if validate_equation(equation, numbers):
-            result = evaluate_equation(equation)
-            if result is not None:
-                if abs(result - target) < EVAL_MARGIN:
-                    # Correct numeric result
+        if "=" in equation:
+            # Split the equation into left and right parts
+            lhs, rhs = equation.split("=", 1)
+            lhs_valid = validate_equation_pattern(lhs)
+            rhs_valid = validate_equation_pattern(rhs)
+            # Evaluate the left and right sides
+            if lhs_valid:
+                lhs_correct = validate_equation_correct(lhs, numbers, target)
+                if lhs_correct:
                     reward_score = full_score
                     accuracy = 1.0
                 else:
-                    # Numeric result but not correct
                     reward_score = format_score
-            else:
-                # Could not evaluate
-                reward_score = format_score
+                    accuracy = 0.0
+            # We only check the right side if the left side wasn't correct
+            if rhs_valid and not (lhs_valid and lhs_correct):
+                rhs_correct = validate_equation_correct(rhs, numbers, target)
+                if rhs_correct:
+                    reward_score = full_score
+                    accuracy = 1.0
+                else:
+                    reward_score = format_score
+                    accuracy = 0.0
         else:
-            # Equation doesn't match the numbers exactly
-            reward_score = format_score
-
-    # Finally, return the updated dictionary
+            valid_pattern = validate_equation_pattern(equation)
+            if valid_pattern:
+                is_correct = validate_equation_correct(equation, numbers, target)
+                if is_correct:
+                    reward_score = full_score
+                    accuracy = 1.0
+                else:
+                    reward_score = format_score
+                    accuracy = 0.0
+            else:
+                reward_score = 0.0
+    logger.info(f"Reward Score: {reward_score} | Accuracy: {accuracy}")
     return {"reward_score": reward_score, "accuracy": accuracy}
 
 
