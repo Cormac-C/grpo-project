@@ -129,15 +129,11 @@ def validate_equation_contains_numbers(
     available_numbers = [
         num for num in available_numbers if num > 0
     ]  # Filter out zero padding from collate function
-    # logger.info(f"Available Numbers: {available_numbers}")
     try:
-        # Extract the numbers from the expression
         numbers_in_eq = [int(n) for n in re.findall(r"\d+", equation_str)]
-        # logger.info(f"Numbers in Equation: {numbers_in_eq}")
 
         # Compare sorted lists
         match = sorted(numbers_in_eq) == sorted(available_numbers)
-        logger.info(f"Match: {match}")
         return match
     except:
         return False
@@ -149,17 +145,14 @@ def validate_equation_correct(
     """
     Validates that the equation contains the right numbers and evaluates to the target.
     """
-    # Check if the equation contains the numbers
     if not validate_equation_contains_numbers(equation_str, numbers):
         return False
     # If we want to add a validation score for the right numbers we can break up this function
 
     result = evaluate_equation(equation_str)
 
-    # Check if the result is within the margin of error of the target
     if result is None:
         return False
-
     return abs(result - target) <= EVAL_MARGIN
 
 
@@ -228,17 +221,14 @@ def compute_metrics(
             if valid_pattern:
                 is_correct = validate_equation_correct(equation, numbers, target)
                 if is_correct:
-                    # If the equation is valid and correct, we give full points
                     reward_score = full_score
                     accuracy = 1.0
                 else:
-                    # If the equation is valid but incorrect, we give partial points
                     reward_score = format_score
                     accuracy = 0.0
             else:
-                # If the equation is invalid, we give no points
                 reward_score = 0.0
-    # Finally, return the updated dictionary
+    logger.info(f"Reward Score: {reward_score} | Accuracy: {accuracy}")
     return {"reward_score": reward_score, "accuracy": accuracy}
 
 
