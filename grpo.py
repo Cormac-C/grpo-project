@@ -74,18 +74,22 @@ def grpo_iteration(
     clear_cache()
 
     # Compute rewards and accuracies for each output
-    rewards, accuracies = reward_model(all_responses, query_batch)
-    logger.info(f"Average Reward: {rewards.mean()}")
+    format_rewards, correctness_rewards, total_rewards, accuracies = reward_model(all_responses, query_batch)
+    logger.info(f"Average Format Reward: {format_rewards.mean()}")
+    logger.info(f"Average Correctness Reward: {correctness_rewards.mean()}")
+    logger.info(f"Average Total Reward: {total_rewards.mean()}")
     logger.info(f"Average Accuracy: {accuracies.mean()}")
     wandb.log(
         {
-            "train_mean_reward": rewards.mean().item(),
+            "train_mean_format_reward": format_rewards.mean().item(),
+            "train_mean_correctness_reward": correctness_rewards.mean().item(),
+            "train_mean_total_reward": total_rewards.mean().item(),
             "train_mean_accuracy": accuracies.mean().item(),
         }
     )
 
     # Compute token-level advantage for each token in each output
-    advantages = calculate_grpo_advantage(rewards)
+    advantages = calculate_grpo_advantage(total_rewards)
     logger.info(f"Advantages: {advantages}")
 
     #  Compute log probabilities for reference model and pre-update policy, no gradients here
@@ -487,6 +491,6 @@ def evaluate_policy(
     clear_cache()
 
     # Compute rewards and accuracies for each output
-    rewards, accuracies = reward_model(all_responses, test_batch)
+    format_rewards, correctness_rewards, total_rewards, accuracies = reward_model(all_responses, test_batch)
 
-    return rewards, accuracies
+    return format_rewards, correctness_rewards, total_rewards, accuracies
