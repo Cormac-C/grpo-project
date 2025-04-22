@@ -21,6 +21,9 @@ LOWER_PRECISION = torch.bfloat16
 logger = logging.getLogger(__name__)
 
 
+def log_gpu_memory(stage: str):
+    logger.info(f"[{stage}] Memory Allocated: {torch.cuda.memory_allocated() / 1e9:.2f} GB | Max Memory Allocated: {torch.cuda.max_memory_allocated() / 1e9:.2f} GB")
+
 def grpo_iteration(
     query_batch: Dict,
     policy_model: PreTrainedModel,
@@ -56,6 +59,7 @@ def grpo_iteration(
         PreTrainedModel: The updated policy model after one iteration of GRPO.
     """
     # Sample G outputs from the policy for each query in query_batch
+    log_gpu_memory("Before sample_outputs")
     model_outputs = sample_outputs(
         policy_model,
         tokenizer,
@@ -64,7 +68,7 @@ def grpo_iteration(
         max_new_tokens,
         temperature,
     )
-
+    log_gpu_memory("After sample_outputs")
     all_responses = model_outputs["all_responses"]
 
     clear_cache()
@@ -87,11 +91,13 @@ def grpo_iteration(
     #  Compute log probabilities for reference model and pre-update policy, no gradients here
     with torch.no_grad():
         if mu > 1:
+            log_gpu_memory("Before old_log_probs")
             old_log_probs = compute_log_probs(
                 policy=policy_model,
                 inputs=model_outputs,
                 temperature=temperature,
             )
+            log_gpu_memory("After old_log_probs")
         else:
             # If mu=1, we don't need to compute old log probs
             old_log_probs = torch.zeros_like(model_outputs["labels"], dtype=torch.bfloat16)
@@ -101,11 +107,13 @@ def grpo_iteration(
         policy_model.to("cpu")
         reference_model.to(gpu_device)
 
+        log_gpu_memory("Before ref_log_probs")
         reference_model_log_probs = compute_log_probs(
             policy=reference_model,
             inputs=model_outputs,  # The dictionary from sample_outputs
             temperature=temperature,
         )
+        log_gpu_memory("After ref_log_probs")
 
         # Swap back the models
         reference_model.to("cpu")
@@ -119,12 +127,13 @@ def grpo_iteration(
         optimizer.zero_grad()
 
         # Compute log probabilities for the current policy model, this needs gradients
+        log_gpu_memory("Before current model log_probs")
         model_log_probs = compute_log_probs(
             policy=policy_model,
             inputs=model_outputs,
             temperature=temperature,
         )
-
+        log_gpu_memory("After current model log_probs")
         # Compute GRPO objective
         objective = calculate_grpo_objective(
             model_log_probs=model_log_probs,
@@ -330,7 +339,7 @@ def compute_log_probs(
     )
 
     # Get logits and apply temperature
-    logits = outputs.logits.float() / temperature
+    logits = outputs.logits / temperature
 
     # Shift sequences for causal modeling
     shift_logits = logits[..., :-1, :].contiguous()
