@@ -169,9 +169,11 @@ def compute_metrics(
     output: str, query: Dict, format_score: float = 0.5, correctness_score: float = 3.0
 ) -> Dict[str, float]:
     """
-    Compute two metrics for the countdown solution:
-    1) 'reward_score': partial or full points
-    2) 'accuracy': 0.0 or 1.0 indicating correctness
+    Compute four metrics for the countdown solution:
+    1) 'format_reward': partial or full points
+    2) 'correctness_reward': partial or full points
+    3) 'total_reward': format_reward + correctness_reward
+    4) 'accuracy': 0.0 or 1.0 indicating correctness
 
     Returns:
         A dict with {'format_reward': float, 'correctness_reward': float, 'total_reward': float, 'accuracy': float}.
@@ -244,7 +246,7 @@ def batch_compute_metrics(
     correctness_score: float = 3.0,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    Batch process the outputs and queries to compute rewards and accuracies.
+    Batch process the outputs and queries to compute all rewards and accuracies.
 
     Args:
         outputs: List of lists of model outputs, should be of shape (batch_size, G).
