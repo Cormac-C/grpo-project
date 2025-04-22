@@ -432,9 +432,8 @@ def calculate_grpo_objective(
     logger.info(f"Objective before mean: {objective}")
 
     # Take mean across all tokens and all outputs, and batch
-    batch_size_and_G = objective.shape[0]
-    response_length  = torch.count_nonzero(model_log_probs).item()
-    objective = torch.sum(objective) / (batch_size_and_G * response_length)
+    response_length = torch.count_nonzero(model_log_probs).item()
+    objective = torch.sum(objective) / response_length
 
     return objective
 
