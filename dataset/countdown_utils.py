@@ -249,26 +249,28 @@ def batch_compute_metrics(
     Returns:
         A tensor for rewards and accuracies, each should be of shape (batch_size, G).
     """
-    batch_size = len(outputs)
-    G = len(outputs[0])
-     
-    # Pre-allocate tensors for results
-    rewards = torch.zeros((batch_size, G), dtype=torch.float32)
-    accuracies = torch.zeros((batch_size, G), dtype=torch.float32)
-     
-     # Get numbers tensor once
+    rewards = []
+    accuracies = []
+    # Numbers is a list of tensors each of shape (batchsize), combine them into a single tensor
     numbers_tensor = queries["numbers"]
-    targets = queries["target"]
 
-    for i in range(batch_size):
+    for i, output_group in enumerate(outputs):
+        group_rewards = []
+        group_accuracies = []
+
         query = {
             "numbers": numbers_tensor[i].tolist(),
-            "target": targets[i].item()
+            "target": queries["target"][i],
         }
-
-        for j, output in enumerate(outputs[i]):
+        # TODO: Could revisit for a more efficient implementation
+        for output in output_group:
             metrics = compute_metrics(output, query, format_score, full_score)
-            rewards[i, j] = metrics["reward_score"]
-            accuracies[i, j] = metrics["accuracy"]
+            group_rewards.append(metrics["reward_score"])
+            group_accuracies.append(metrics["accuracy"])
 
-    return rewards, accuracies
+        rewards.append(group_rewards)
+        accuracies.append(group_accuracies)
+    # Convert to tensors
+    rewards_tensor = torch.tensor(rewards, dtype=torch.float32)
+    accuracies_tensor = torch.tensor(accuracies, dtype=torch.float32)
+    return rewards_tensor, accuracies_tensor
