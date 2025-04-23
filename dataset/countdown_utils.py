@@ -280,10 +280,6 @@ def batch_compute_metrics(
             total_rewards.append(metrics["total_score"])
             accuracies.append(metrics["accuracy"])
 
-        format_rewards.append(format_rewards)
-        correctness_rewards.append(correctness_rewards)
-        total_rewards.append(total_rewards)
-        accuracies.append(accuracies)
     # Convert to tensors
     format_rewards_tensor = torch.tensor(format_rewards, dtype=torch.bfloat16)
     correctness_rewards_tensor = torch.tensor(correctness_rewards, dtype=torch.bfloat16)
