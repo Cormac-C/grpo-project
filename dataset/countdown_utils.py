@@ -170,9 +170,9 @@ def compute_metrics(
 ) -> Dict[str, float]:
     """
     Compute four metrics for the countdown solution:
-    1) 'format_reward': partial or full points
-    2) 'correctness_reward': partial or full points
-    3) 'total_reward': format_reward + correctness_reward
+    1) 'format_reward': reward for correct format
+    2) 'correctness_reward': reward for correct solution
+    3) 'total_reward': sum of format_reward and correctness_reward
     4) 'accuracy': 0.0 or 1.0 indicating correctness
 
     Returns:
