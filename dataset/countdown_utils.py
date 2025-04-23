@@ -9,7 +9,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 EVAL_MARGIN = 1e-5
-
+LOWER_PRECISION = torch.bfloat16
 
 # ---------------------- Dataset Generator ----------------------
 def combine_nums(a: int, b: int) -> List[Tuple[int, str]]:
@@ -271,6 +271,6 @@ def batch_compute_metrics(
         rewards.append(group_rewards)
         accuracies.append(group_accuracies)
     # Convert to tensors
-    rewards_tensor = torch.tensor(rewards, dtype=torch.float32)
-    accuracies_tensor = torch.tensor(accuracies, dtype=torch.float32)
+    rewards_tensor = torch.tensor(rewards, dtype=LOWER_PRECISION)
+    accuracies_tensor = torch.tensor(accuracies, dtype=LOWER_PRECISION)
     return rewards_tensor, accuracies_tensor
