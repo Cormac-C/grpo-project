@@ -94,7 +94,7 @@ def grpo_iteration(
             )
         else:
             # If mu=1, we don't need to compute old log probs
-            old_log_probs = torch.zeros_like(model_outputs["labels"], dtype=torch.bfloat16)
+            old_log_probs = torch.zeros_like(model_outputs["labels"], dtype=LOWER_PRECISION)
 
         # Swap the policy model and reference model
         gpu_device = policy_model.device
