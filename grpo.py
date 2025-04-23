@@ -458,7 +458,7 @@ def evaluate_policy(
     test_batch: Dict,
     max_new_tokens: int = MAX_NEW_TOKENS,
     temperature: float = TEMPERATURE,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Evaluate the policy model on a test batch.
 
@@ -471,9 +471,11 @@ def evaluate_policy(
         temperature: Temperature parameter for sampling.
 
     Returns:
-        Tuple[torch.Tensor, torch.Tensor]: A tuple containing:
-            - rewards: Tensor of shape (batch_size,) containing rewards for each generated response
-            - accuracies: Tensor of shape (batch_size,) containing accuracy scores for each response
+        Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]: A tuple containing:
+            - format_rewards: Tensor of shape (batch_size, G) containing format rewards for each generated response
+            - correctness_rewards: Tensor of shape (batch_size, G) containing correctness rewards for each generated response
+            - total_rewards: Tensor of shape (batch_size, G) containing total rewards for each generated response
+            - accuracies: Tensor of shape (batch_size, G) containing accuracies for each generated response
     """
     policy_model.eval()
     with torch.no_grad():

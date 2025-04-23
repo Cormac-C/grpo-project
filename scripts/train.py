@@ -211,7 +211,7 @@ def main():
                 logger.info("Evaluating model...")
                 format_rewards, correctness_rewards, total_rewards, accuracies = [], [], [], []
                 for test_batch in tqdm(test_dataloader, desc="Evaluating"):
-                    rewards, accuracies = evaluate_policy(
+                    format_rewards, correctness_rewards, total_rewards, accuracies = evaluate_policy(
                         policy_model=model,
                         tokenizer=tokenizer,
                         reward_model=batch_compute_metrics,
