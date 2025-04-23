@@ -265,8 +265,10 @@ def batch_compute_metrics(
     numbers_tensor = queries["numbers"]
 
     for i, output_group in enumerate(outputs):
-        group_rewards = []
         group_accuracies = []
+        group_format_scores = []
+        group_correctness_scores = []
+        group_total_scores = []
 
         query = {
             "numbers": numbers_tensor[i].tolist(),
@@ -275,10 +277,15 @@ def batch_compute_metrics(
         # TODO: Could revisit for a more efficient implementation
         for output in output_group:
             metrics = compute_metrics(output, query, format_score, correctness_score)
-            format_rewards.append(metrics["format_score"])
-            correctness_rewards.append(metrics["correctness_score"])
-            total_rewards.append(metrics["total_score"])
-            accuracies.append(metrics["accuracy"])
+            group_format_scores.append(metrics["format_score"])
+            group_correctness_scores.append(metrics["correctness_score"])
+            group_total_scores.append(metrics["total_score"])
+            group_accuracies.append(metrics["accuracy"])
+        
+        format_rewards.append(group_format_scores)
+        correctness_rewards.append(group_correctness_scores)
+        total_rewards.append(group_total_scores)
+        accuracies.append(group_accuracies)
 
     # Convert to tensors
     format_rewards_tensor = torch.tensor(format_rewards, dtype=torch.bfloat16)
